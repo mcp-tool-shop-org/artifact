@@ -19,7 +19,8 @@ import { driveFallback } from './fallback.js';
 import { extractTruthBundle } from './truth.js';
 import * as history from './history.js';
 import * as mem from './memory.js';
-import type { RepoContext, RepoType, DecisionPacket } from './types.js';
+import { buildQueryMenu, collectFindings, synthesizeBrief, saveBrief, formatWebBrief } from './web.js';
+import type { RepoContext, RepoType, DecisionPacket, WebOptions } from './types.js';
 
 function usage(): never {
   console.error(`Usage: artifact <command> [options]
@@ -32,25 +33,57 @@ Commands:
   memory stats                Show memory statistics.
 
 Drive options:
-  --no-curator     Skip Ollama, use deterministic fallback only.
-  --curator-speak  Print Curator callouts (veto/twist/pick/risk).
-  --type <type>    Repo type (R1_tooling_cli, etc.). Default: unknown.
-  --help           Show this help.`);
+  --no-curator         Skip Ollama, use deterministic fallback only.
+  --curator-speak      Print Curator callouts (veto/twist/pick/risk).
+  --type <type>        Repo type (R1_tooling_cli, etc.). Default: unknown.
+  --web                Enable web recommendations.
+  --web-cache-ttl <h>  Cache TTL in hours (default: 72).
+  --web-domains <csv>  Comma-separated domain allowlist.
+  --web-refresh        Bypass cache, re-fetch all queries.
+  --help               Show this help.`);
   return process.exit(1) as never;
 }
 
 // ── Drive command ───────────────────────────────────────────────
 
+/** Parse a flag value: --flag <value> */
+function flagValue(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx !== -1 && args[idx + 1] ? args[idx + 1] : undefined;
+}
+
+/** Collect indices of flags that consume the next arg */
+function flagValueIndices(args: string[], flags: string[]): Set<number> {
+  const indices = new Set<number>();
+  for (const flag of flags) {
+    const idx = args.indexOf(flag);
+    if (idx !== -1) indices.add(idx + 1);
+  }
+  return indices;
+}
+
 async function cmdDrive(args: string[]): Promise<void> {
   const noCurator = args.includes('--no-curator');
   const curatorSpeak = args.includes('--curator-speak');
-  const typeIdx = args.indexOf('--type');
-  const repoType: RepoType = typeIdx !== -1 && args[typeIdx + 1]
-    ? args[typeIdx + 1] as RepoType
-    : 'unknown';
+  const repoType: RepoType = (flagValue(args, '--type') as RepoType) ?? 'unknown';
 
-  const positional = args.filter((a: string) =>
-    !a.startsWith('--') && (typeIdx === -1 || args.indexOf(a) !== typeIdx + 1));
+  // Web options
+  const webEnabled = args.includes('--web');
+  const webRefresh = args.includes('--web-refresh');
+  const webTtlRaw = flagValue(args, '--web-cache-ttl');
+  const webDomainsRaw = flagValue(args, '--web-domains');
+  const webOpts: WebOptions = {
+    enabled: webEnabled,
+    cacheTtlHours: webTtlRaw ? parseInt(webTtlRaw, 10) || 72 : 72,
+    domains: webDomainsRaw ? webDomainsRaw.split(',').map(d => d.trim()).filter(Boolean) : [],
+    refresh: webRefresh,
+  };
+
+  // Filter positional args (skip flags and their values)
+  const valueFlags = ['--type', '--web-cache-ttl', '--web-domains'];
+  const valueIndices = flagValueIndices(args, valueFlags);
+  const positional = args.filter((a: string, i: number) =>
+    !a.startsWith('--') && !valueIndices.has(i));
   const repoPath = resolve(positional[0] ?? '.');
   const repoName = basename(repoPath);
 
@@ -73,6 +106,9 @@ async function cmdDrive(args: string[]): Promise<void> {
 
   if (noCurator) {
     console.error('Curator: skipped (--no-curator)');
+    if (webOpts.enabled) {
+      console.error('Web: --web requires Ollama for synthesis. Skipped (use without --no-curator).');
+    }
     packet = driveFallback(ctx, store);
   } else {
     const conn = await connect();
@@ -88,7 +124,25 @@ async function cmdDrive(args: string[]): Promise<void> {
         console.error(`Memory: ${total} relevant entries loaded (${brief.repo_entries.length} repo, ${brief.org_entries.length} org)`);
       }
 
-      const result = await curatorDrive(conn, ctx, store, brief.formatted || undefined);
+      // Build web brief (if --web enabled)
+      let webBriefText: string | undefined;
+      if (webOpts.enabled) {
+        console.error('Web: collecting findings...');
+        const tier = history.recentTiers(store)[0] ?? 'Promotion'; // hint tier for query menu
+        const queries = buildQueryMenu(tier, repoType, repoName);
+        console.error(`Web: ${queries.length} queries queued`);
+
+        const findings = await collectFindings(queries, repoPath, webOpts);
+        console.error(`Web: ${findings.length} findings collected`);
+
+        const webBrief = await synthesizeBrief(findings, tier, repoName, conn);
+        console.error(`Web: brief synthesized (${webBrief.web_status}, ${webBrief.recommendations.length} recommendations)`);
+
+        await saveBrief(repoPath, webBrief);
+        webBriefText = formatWebBrief(webBrief);
+      }
+
+      const result = await curatorDrive(conn, ctx, store, brief.formatted || undefined, webBriefText);
       if (result) {
         packet = result;
       } else {

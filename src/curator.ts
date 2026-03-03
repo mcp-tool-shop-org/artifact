@@ -6,7 +6,7 @@
 
 import type { OllamaConnection } from './ollama.js';
 import { generate } from './ollama.js';
-import type { DecisionPacket, RepoContext, HistoryStore, FreshnessPayload, Tier, TruthAtom, SelectedHook, Callouts } from './types.js';
+import type { DecisionPacket, RepoContext, HistoryStore, FreshnessPayload, Tier, TruthAtom, SelectedHook, Callouts, WebBrief } from './types.js';
 import { recentTiers, recentFormats, recentConstraints, recentAtomIds } from './history.js';
 
 const TIERS: Tier[] = ['Exec', 'Dev', 'Creator', 'Fun', 'Promotion'];
@@ -38,7 +38,7 @@ function formatAtoms(atoms: TruthAtom[]): string {
   return sections.join('\n\n');
 }
 
-function buildPrompt(ctx: RepoContext, history: HistoryStore, memoryBrief?: string): string {
+function buildPrompt(ctx: RepoContext, history: HistoryStore, memoryBrief?: string, webBrief?: string): string {
   const usedTiers = recentTiers(history);
   const usedFormats = recentFormats(history);
   const usedConstraints = recentConstraints(history);
@@ -59,8 +59,7 @@ ${atomsSection}
 
 === RECENTLY USED ATOM IDs (avoid repeating) ===
 ${usedAtoms.length > 0 ? usedAtoms.join(', ') : 'none'}
-${memorySection ? `\n${memorySection}\n` : ''}
-AVAILABLE TIERS: ${tiersAvail}
+${memorySection ? `\n${memorySection}\n` : ''}${webBrief ? `\n${webBrief}\n\n` : ''}AVAILABLE TIERS: ${tiersAvail}
 RECENTLY USED FORMATS (avoid): ${usedFormats.length > 0 ? usedFormats.join(', ') : 'none'}
 RECENTLY USED CONSTRAINTS (vary): ${usedConstraints.length > 0 ? usedConstraints.join(', ') : 'none'}
 
@@ -87,8 +86,11 @@ YOUR JOB:
 8. Provide 4 callouts (1 sentence each):
    - veto: what would be stale/generic/repetitive this run
    - twist: the required repo-specific hook that makes it unique
-   - pick: your top format choice and why
+   - pick: your top format choice and why (if web brief available, you may reference a web finding ID)
    - risk: one thing to watch out for (optional, use "" if none)
+9. If a WEB BRIEF is provided, you may use it to influence tier/format/constraint ranking.
+   Any claim based on web MUST reference a finding ID in the relevant callout.
+   Web CANNOT introduce facts about the repo — only external patterns/practices.
 
 RESPOND WITH ONLY THIS JSON (no markdown fences, no text outside):
 {
@@ -185,9 +187,25 @@ function validateHooks(hooks: unknown, atoms: TruthAtom[]): SelectedHook[] {
 /** Resolve a value — if it looks like an atom ID, look up the atom's value */
 function resolveValue(val: string | undefined, atoms: TruthAtom[]): string | undefined {
   if (!val || val === 'unknown') return undefined;
-  // Check if the Curator returned an atom ID instead of a value
-  const atom = atoms.find(a => a.id === val);
-  if (atom) return atom.value;
+  // Check if the Curator returned an exact atom ID
+  const exact = atoms.find(a => a.id === val);
+  if (exact) return exact.value;
+  // Check for bracketed prefix pattern: "[type:hash] actual text"
+  const bracketMatch = val.match(/^\[([^\]]+)\]\s*(.*)/);
+  if (bracketMatch) {
+    const idPart = bracketMatch[1];
+    const atom = atoms.find(a => a.id === idPart);
+    if (atom) return atom.value;
+    return bracketMatch[2] || val;
+  }
+  // Check for bare prefix pattern: "type:hash text" (no brackets)
+  const bareMatch = val.match(/^(\w+:[a-f0-9]{12,16})\s+(.*)/);
+  if (bareMatch) {
+    const idPart = bareMatch[1];
+    const atom = atoms.find(a => a.id === idPart);
+    if (atom) return atom.value;
+    return bareMatch[2] || val;
+  }
   return val;
 }
 
@@ -215,8 +233,9 @@ export async function drive(
   ctx: RepoContext,
   history: HistoryStore,
   memoryBrief?: string,
+  webBrief?: string,
 ): Promise<DecisionPacket | null> {
-  const prompt = buildPrompt(ctx, history, memoryBrief);
+  const prompt = buildPrompt(ctx, history, memoryBrief, webBrief);
   const raw = await generate(conn, prompt);
   if (!raw) return null;
 

@@ -136,3 +136,56 @@ export interface RepoContext {
   repo_type: RepoType;
   truth_bundle: TruthBundle;
 }
+
+// ── Web Recommendations (Phase 3.1) ─────────────────────────────
+
+/** A single web search result, structured and cited */
+export interface WebFinding {
+  id: string;
+  query: string;
+  title: string;
+  source: { domain: string; url: string };
+  published_at: string | null;
+  retrieved_at: string;
+  snippet: string;
+  tags: string[];
+  confidence: number;
+}
+
+/** A single recommendation derived from web findings */
+export interface WebRecommendation {
+  recommendation: string;
+  why_now: string;
+  apply_to: string;
+  citations: string[];
+}
+
+/** Structured brief — what the Curator sees from the web */
+export interface WebBrief {
+  focus: string;
+  recommendations: WebRecommendation[];
+  finding_count: number;
+  web_status: 'ok' | 'partial' | 'unavailable';
+}
+
+/** Cached web search result */
+export interface WebCacheEntry {
+  query: string;
+  query_hash: string;
+  findings: WebFinding[];
+  retrieved_at: string;
+  ttl_hours: number;
+}
+
+/** Full web cache store */
+export interface WebCache {
+  entries: Record<string, WebCacheEntry>;
+}
+
+/** Options for the web engine */
+export interface WebOptions {
+  enabled: boolean;
+  cacheTtlHours: number;
+  domains: string[];
+  refresh: boolean;
+}
