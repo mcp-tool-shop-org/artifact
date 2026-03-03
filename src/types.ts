@@ -87,6 +87,14 @@ export interface TruthBundle {
 
 // ── Decision packet + context ───────────────────────────────────
 
+/** Curator callouts — structured "talking" (not chat) */
+export interface Callouts {
+  veto: string;
+  twist: string;
+  pick: string;
+  risk: string;
+}
+
 /** The decision packet — the only output that matters */
 export interface DecisionPacket {
   repo_name: string;
@@ -97,6 +105,7 @@ export interface DecisionPacket {
   ban_list: string[];
   freshness_payload: FreshnessPayload;
   selected_hooks: SelectedHook[];
+  callouts: Callouts;
   driver_meta: DriverMeta;
 }
 

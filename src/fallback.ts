@@ -134,6 +134,12 @@ export function driveFallback(ctx: RepoContext, history: HistoryStore): Decision
       sharp_edge: edgeAtom?.value ?? 'unknown — no sharp_edge atoms found',
     },
     selected_hooks: selectedHooks,
+    callouts: {
+      veto: '',
+      twist: invariantAtom ? `Ground in: "${invariantAtom.value.slice(0, 80)}"` : '',
+      pick: `${tier} → ${formats[0]}`,
+      risk: '',
+    },
     driver_meta: {
       host: null,
       model: null,

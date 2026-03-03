@@ -6,7 +6,7 @@
 
 import type { OllamaConnection } from './ollama.js';
 import { generate } from './ollama.js';
-import type { DecisionPacket, RepoContext, HistoryStore, FreshnessPayload, Tier, TruthAtom, SelectedHook } from './types.js';
+import type { DecisionPacket, RepoContext, HistoryStore, FreshnessPayload, Tier, TruthAtom, SelectedHook, Callouts } from './types.js';
 import { recentTiers, recentFormats, recentConstraints, recentAtomIds } from './history.js';
 
 const TIERS: Tier[] = ['Exec', 'Dev', 'Creator', 'Fun', 'Promotion'];
@@ -38,7 +38,7 @@ function formatAtoms(atoms: TruthAtom[]): string {
   return sections.join('\n\n');
 }
 
-function buildPrompt(ctx: RepoContext, history: HistoryStore): string {
+function buildPrompt(ctx: RepoContext, history: HistoryStore, memoryBrief?: string): string {
   const usedTiers = recentTiers(history);
   const usedFormats = recentFormats(history);
   const usedConstraints = recentConstraints(history);
@@ -46,6 +46,7 @@ function buildPrompt(ctx: RepoContext, history: HistoryStore): string {
 
   const tiersAvail = TIERS.map(t => `${t}${usedTiers.includes(t) ? ' (used recently)' : ''}`).join(', ');
   const atomsSection = formatAtoms(ctx.truth_bundle.atoms);
+  const memorySection = memoryBrief || '';
 
   return `You are the Curator — a silent freshness enforcement system for artifact selection.
 You MUST respond with ONLY a JSON object. No markdown, no explanation, no prose.
@@ -58,7 +59,7 @@ ${atomsSection}
 
 === RECENTLY USED ATOM IDs (avoid repeating) ===
 ${usedAtoms.length > 0 ? usedAtoms.join(', ') : 'none'}
-
+${memorySection ? `\n${memorySection}\n` : ''}
 AVAILABLE TIERS: ${tiersAvail}
 RECENTLY USED FORMATS (avoid): ${usedFormats.length > 0 ? usedFormats.join(', ') : 'none'}
 RECENTLY USED CONSTRAINTS (vary): ${usedConstraints.length > 0 ? usedConstraints.join(', ') : 'none'}
@@ -83,6 +84,11 @@ YOUR JOB:
    - weird_detail: pick the most surprising/specific invariant, error, or constraint atom
    - recent_change: pick a recent_change atom (or "unknown" if none exist)
    - sharp_edge: pick a sharp_edge or anti_goal atom (or "unknown" if none exist)
+8. Provide 4 callouts (1 sentence each):
+   - veto: what would be stale/generic/repetitive this run
+   - twist: the required repo-specific hook that makes it unique
+   - pick: your top format choice and why
+   - risk: one thing to watch out for (optional, use "" if none)
 
 RESPOND WITH ONLY THIS JSON (no markdown fences, no text outside):
 {
@@ -99,6 +105,12 @@ RESPOND WITH ONLY THIS JSON (no markdown fences, no text outside):
     "weird_detail": "...",
     "recent_change": "...",
     "sharp_edge": "..."
+  },
+  "callouts": {
+    "veto": "...",
+    "twist": "...",
+    "pick": "...",
+    "risk": "..."
   }
 }`;
 }
@@ -111,6 +123,16 @@ interface CuratorResponse {
   ban_list?: string[];
   selected_hooks?: Array<{ atom_id?: string; role?: string }>;
   freshness_payload?: Partial<FreshnessPayload>;
+  callouts?: Partial<Callouts>;
+}
+
+function validateCallouts(raw: Partial<Callouts> | undefined): Callouts {
+  return {
+    veto: typeof raw?.veto === 'string' && raw.veto ? raw.veto : '',
+    twist: typeof raw?.twist === 'string' && raw.twist ? raw.twist : '',
+    pick: typeof raw?.pick === 'string' && raw.pick ? raw.pick : '',
+    risk: typeof raw?.risk === 'string' && raw.risk ? raw.risk : '',
+  };
 }
 
 function parseResponse(raw: string): CuratorResponse | null {
@@ -192,8 +214,9 @@ export async function drive(
   conn: OllamaConnection,
   ctx: RepoContext,
   history: HistoryStore,
+  memoryBrief?: string,
 ): Promise<DecisionPacket | null> {
-  const prompt = buildPrompt(ctx, history);
+  const prompt = buildPrompt(ctx, history, memoryBrief);
   const raw = await generate(conn, prompt);
   if (!raw) return null;
 
@@ -212,6 +235,7 @@ export async function drive(
     ban_list: validateStringArray(parsed.ban_list, []),
     freshness_payload: buildFreshnessPayload(parsed.freshness_payload, ctx.truth_bundle.atoms),
     selected_hooks: selectedHooks,
+    callouts: validateCallouts(parsed.callouts),
     driver_meta: {
       host: conn.host,
       model: conn.model,
