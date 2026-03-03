@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-03-03
+
+### Added
+
+- Phase 14: Built Artifact Tracking
+- Built store at `~/.artifact/org/built.json` — mutable tracking for built/verified artifacts
+- `artifact built add <repo> <path...>` — attach artifact file paths
+- `artifact built ls [repo-name]` — list built status across repos
+- `artifact built status <repo-name>` — detailed tracking for one repo
+- `artifact verify --record` — write verification results to built store
+- HTML gallery: built-status badges (Verified ✓, Unverified □, Failed ✗) next to tier badges
+- HTML gallery: built-status filter buttons
+- Markdown catalog: "Built" column in timeline table
+- JSON catalog: `built_status` field on entries
+
 ## [1.1.0] - 2026-03-03
 
 ### Added

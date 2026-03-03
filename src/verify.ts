@@ -15,8 +15,10 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, basename } from 'node:path';
 import { loadPacket, loadTruthBundle } from './blueprint.js';
+import { recordVerifyResult, getToolVersion } from './built.js';
+import { getPersona } from './persona.js';
 import type { DecisionPacket, TruthAtom } from './types.js';
 
 // ── Types ───────────────────────────────────────────────────────
@@ -311,11 +313,13 @@ export function formatVerifyResult(result: VerifyResult, repoName: string): stri
  *
  * @param repoPath  Path to the repo (reads .artifact/decision_packet.json + truth_bundle.json)
  * @param artifactPath  Path to the artifact file to verify
+ * @param opts.record  If true, write result to the built tracking store
  * @returns VerifyResult or null if inputs are missing
  */
 export async function verifyArtifact(
   repoPath: string,
   artifactPath: string,
+  opts?: { record?: boolean },
 ): Promise<VerifyResult | null> {
   const packet = await loadPacket(repoPath);
   if (!packet) return null;
@@ -330,5 +334,15 @@ export async function verifyArtifact(
     return null;
   }
 
-  return verify(artifactText, packet, atoms);
+  const result = verify(artifactText, packet, atoms);
+
+  // Record to built tracking store
+  if (opts?.record) {
+    const repoName = basename(repoPath);
+    const toolVersion = await getToolVersion();
+    const persona = await getPersona();
+    await recordVerifyResult(repoName, result.passed, toolVersion, persona.name);
+  }
+
+  return result;
 }

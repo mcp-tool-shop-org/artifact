@@ -12,9 +12,10 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
-import type { LedgerEntry, OrgStatus, Season, Tier } from './types.js';
+import type { LedgerEntry, OrgStatus, Season, Tier, BuiltStatus } from './types.js';
 import { loadLedger, loadSeason, computeStatus } from './org.js';
 import { FORMAT_HINTS } from './blueprint.js';
+import { loadBuiltStore, builtStatusBadge } from './built.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ interface CatalogEntry {
   signature_move: string | null;
   season: string;
   timestamp: string;
+  built_status: BuiltStatus | null;
 }
 
 interface CatalogJson {
@@ -55,7 +57,10 @@ const TIER_LABELS: Record<Tier, string> = {
 
 // ── Build catalog ───────────────────────────────────────────────
 
-function ledgerToEntries(ledger: LedgerEntry[]): CatalogEntry[] {
+function ledgerToEntries(
+  ledger: LedgerEntry[],
+  builtMap: Record<string, BuiltStatus>,
+): CatalogEntry[] {
   return ledger.map(e => ({
     repo_name: e.repo_name,
     tier: e.tier,
@@ -65,6 +70,7 @@ function ledgerToEntries(ledger: LedgerEntry[]): CatalogEntry[] {
     signature_move: e.signature_move,
     season: e.season,
     timestamp: e.timestamp,
+    built_status: builtMap[e.repo_name] ?? null,
   }));
 }
 
@@ -155,12 +161,13 @@ function buildMarkdownCatalog(
   lines.push('');
   lines.push('## Timeline');
   lines.push('');
-  lines.push('| Date | Repo | Tier | Format | Move |');
-  lines.push('|------|------|------|--------|------|');
+  lines.push('| Date | Repo | Tier | Format | Move | Built |');
+  lines.push('|------|------|------|--------|------|-------|');
   const sorted = [...entries].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   for (const e of sorted) {
     const move = e.signature_move ?? '';
-    lines.push(`| ${e.timestamp.slice(0, 10)} | ${e.repo_name} | ${e.tier} | ${e.format} | ${move} |`);
+    const built = e.built_status ? builtStatusBadge(e.built_status).label : '';
+    lines.push(`| ${e.timestamp.slice(0, 10)} | ${e.repo_name} | ${e.tier} | ${e.format} | ${move} | ${built} |`);
   }
   lines.push('');
 
@@ -223,6 +230,7 @@ function buildHtmlCatalog(
   const allSeasons = [...new Set(entries.map(e => e.season))].filter(s => s !== 'none');
   const allMoves = [...new Set(entries.map(e => e.signature_move).filter(Boolean))] as string[];
   const allFormats = [...new Set(entries.map(e => e.format))];
+  const allBuiltStatuses = [...new Set(entries.map(e => e.built_status).filter(Boolean))] as BuiltStatus[];
 
   // Sort reverse chronological
   const sorted = [...entries].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
@@ -239,9 +247,13 @@ function buildHtmlCatalog(
       ? `<span class="tag season">${escapeHtml(e.season)}</span>`
       : '';
 
-    return `<div class="card" data-tier="${e.tier}" data-season="${escapeHtml(e.season)}" data-format="${escapeHtml(e.format)}" data-move="${escapeHtml(moveLabel)}">
+    const builtBadgeHtml = e.built_status
+      ? (() => { const b = builtStatusBadge(e.built_status); return `<span class="built-badge" style="background:${b.color}">${b.icon} ${b.label}</span>`; })()
+      : '';
+
+    return `<div class="card" data-tier="${e.tier}" data-season="${escapeHtml(e.season)}" data-format="${escapeHtml(e.format)}" data-move="${escapeHtml(moveLabel)}" data-built="${e.built_status ?? ''}">
   <div class="card-header">
-    <span class="tier-badge" style="background:${color}">${TIER_LABELS[e.tier]}</span>
+    <span class="tier-badge" style="background:${color}">${TIER_LABELS[e.tier]}</span>${builtBadgeHtml}
     <span class="date">${e.timestamp.slice(0, 10)}</span>
   </div>
   <h3 class="repo-name">${escapeHtml(e.repo_name)}</h3>
@@ -274,6 +286,11 @@ function buildHtmlCatalog(
   const seasonFilters = allSeasons.map(s =>
     `<button class="filter-btn" data-filter="season" data-value="${escapeHtml(s)}">${escapeHtml(s)}</button>`
   ).join('');
+
+  const builtFilters = allBuiltStatuses.map(s => {
+    const b = builtStatusBadge(s);
+    return `<button class="filter-btn" data-filter="built" data-value="${s}" style="border-color:${b.color}">${b.icon} ${b.label}</button>`;
+  }).join('');
 
   // Bans
   const bansHtml = status.recent_bans.length > 0
@@ -314,6 +331,7 @@ h1{font-size:2rem;color:#f0f6fc;margin-bottom:.5rem;letter-spacing:-.02em}
 .card.hidden{display:none}
 .card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem}
 .tier-badge{font-size:.7rem;font-weight:600;color:#f0f6fc;padding:.15rem .5rem;border-radius:2rem;text-transform:uppercase;letter-spacing:.04em}
+.built-badge{font-size:.6rem;font-weight:600;color:#f0f6fc;padding:.1rem .4rem;border-radius:2rem;margin-left:.35rem;letter-spacing:.03em}
 .date{font-size:.75rem;color:#484f58}
 .repo-name{font-size:1.15rem;color:#f0f6fc;margin-bottom:.35rem;font-weight:600}
 .format{font-size:.85rem;color:#58a6ff;font-family:'SF Mono',Consolas,monospace;margin-bottom:.35rem}
@@ -354,6 +372,10 @@ ${bansHtml}
 ${allSeasons.length > 0 ? `  <div class="filter-group">
     <span class="filter-group-label">Season</span>
     ${seasonFilters}
+  </div>` : ''}
+${allBuiltStatuses.length > 0 ? `  <div class="filter-group">
+    <span class="filter-group-label">Built</span>
+    ${builtFilters}
   </div>` : ''}
   <button class="reset-btn" onclick="resetFilters()">Reset</button>
 </div>
@@ -428,6 +450,13 @@ export async function generateCatalog(opts: { all?: boolean; format?: CatalogFor
   const ledger = await loadLedger();
   const season = await loadSeason();
   const status = await computeStatus();
+  const builtStore = await loadBuiltStore();
+
+  // Build a map of repo → built status for quick lookup
+  const builtMap: Record<string, BuiltStatus> = {};
+  for (const [name, record] of Object.entries(builtStore.repos)) {
+    builtMap[name] = record.built_status;
+  }
 
   // Filter entries
   let filtered: LedgerEntry[];
@@ -437,7 +466,7 @@ export async function generateCatalog(opts: { all?: boolean; format?: CatalogFor
     filtered = ledger.filter(e => e.season === season.name);
   }
 
-  const entries = ledgerToEntries(filtered);
+  const entries = ledgerToEntries(filtered, builtMap);
 
   // Output directory
   const orgDir = join(homedir(), '.artifact', 'org');

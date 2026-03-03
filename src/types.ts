@@ -1,3 +1,32 @@
+// ── Built Artifact Tracking types (Phase 14) ────────────────────
+
+/** Status of a built artifact */
+export type BuiltStatus =
+  | 'blueprint_only'     // decision made, nothing built
+  | 'built_unverified'   // files attached, not yet verified
+  | 'verified_pass'      // verified and passed
+  | 'verified_fail';     // verified and failed
+
+/** Tracking record for one repo's built artifact */
+export interface BuiltRecord {
+  repo_name: string;
+  built_status: BuiltStatus;
+  artifact_paths: string[];       // repo-relative
+  verified_at: string | null;     // ISO timestamp
+  verified_by: string | null;     // persona name
+  tool_version: string;           // artifact CLI version
+  persona: string;                // active persona
+  iterations: number;             // verify-fix loop count
+  rating: number | null;          // optional 1-5
+  updated_at: string;             // ISO timestamp
+}
+
+/** Persistent store for all built artifact records */
+export interface BuiltStore {
+  version: 1;
+  repos: Record<string, BuiltRecord>;
+}
+
 // ── Inference Profile types (Phase 11) ──────────────────────────
 
 /** Who primarily benefits from an artifact about this repo */

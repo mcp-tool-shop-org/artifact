@@ -14,6 +14,7 @@
  *   verify [repo-path]          Lint artifact against blueprint + truth bundle
  *   review [repo-path]          Print a 4-block editorial review card
  *   catalog [--all]             Generate season catalog
+ *   built add|ls|status         Built artifact tracking
  *   memory show [--org]         Show memory entries
  *   memory forget <repo-name>   Forget a repo's memory
  *   memory prune <days>         Prune old entries
@@ -38,6 +39,7 @@ import { generateCatalog } from './catalog.js';
 import type { CatalogFormat } from './catalog.js';
 import { buildpack } from './buildpack.js';
 import { verifyArtifact, formatVerifyResult } from './verify.js';
+import { loadBuiltStore, addArtifactPaths, getBuiltRecord, getToolVersion, listBuiltRecords, formatBuiltRecord, formatBuiltList } from './built.js';
 import { inferProfile, formatProfileForPrompt, formatProfileForDisplay } from './infer.js';
 import { getPersona, getPersonaByName, loadConfig, saveConfig, formatWhoami, formatPersonaCard, formatAbout, PERSONA_NAMES } from './persona.js';
 import type { RepoContext, RepoType, DecisionPacket, WebOptions, InferenceProfile } from './types.js';
@@ -85,6 +87,9 @@ Commands:
   org status                  Coverage, diversity, gaps.
   org ledger [n]              Last N decisions (default: 10).
   org bans                    Current auto-bans with reasons.
+  built add <repo> <path...>  Attach artifact file paths to tracking.
+  built ls [repo-name]        List built status (all or one repo).
+  built status <repo-name>    Detailed tracking for one repo.
 
 Drive options:
   --no-curator         Skip Ollama, use deterministic fallback only.
@@ -113,6 +118,7 @@ Buildpack options:
 
 Verify options:
   --artifact <path>    Path to the artifact file to lint (required).
+  --record             Write result to built artifact tracking store.
 
 Ritual options:
   Runs drive --curate-org --web --blueprint --review, then updates catalog.
@@ -697,17 +703,19 @@ async function cmdBuildpack(args: string[]): Promise<void> {
 async function cmdVerify(args: string[]): Promise<void> {
   const artifactPath = flagValue(args, '--artifact');
   const jsonMode = args.includes('--json');
+  const record = args.includes('--record');
   const positional = args.filter((a, i) => !a.startsWith('--') && !flagValueIndices(args, ['--artifact']).has(i));
   const repoPath = resolve(positional[0] ?? '.');
   const repoName = basename(repoPath);
 
   if (!artifactPath) {
-    console.error('Usage: artifact verify [repo-path] --artifact <path>');
+    console.error('Usage: artifact verify [repo-path] --artifact <path> [--record]');
     console.error('  --artifact <path>  Path to the generated artifact file to lint.');
+    console.error('  --record           Write result to built artifact tracking store.');
     process.exit(1);
   }
 
-  const result = await verifyArtifact(repoPath, artifactPath);
+  const result = await verifyArtifact(repoPath, artifactPath, { record });
   if (!result) {
     console.error(`Could not load decision packet, truth bundle, or artifact file.`);
     console.error(`  Repo: ${repoPath}`);
@@ -947,6 +955,52 @@ async function cmdAbout(): Promise<void> {
   console.log(formatAbout(version, persona));
 }
 
+// ── Built commands ──────────────────────────────────────────────
+
+async function cmdBuiltAdd(args: string[]): Promise<void> {
+  if (args.length < 2) {
+    console.error('Usage: artifact built add <repo-path> <path...>');
+    console.error('  Attach artifact file paths to the built tracking store.');
+    process.exit(1);
+  }
+
+  const repoPath = resolve(args[0]);
+  const repoName = basename(repoPath);
+  const paths = args.slice(1);
+
+  const toolVersion = await getToolVersion();
+  const persona = await getPersona();
+  const record = await addArtifactPaths(repoName, paths, toolVersion, persona.name);
+
+  console.log(`Attached ${paths.length} path(s) to "${repoName}"`);
+  console.log(`  status: ${record.built_status}`);
+  console.log(`  paths:  ${record.artifact_paths.join(', ')}`);
+}
+
+async function cmdBuiltLs(args: string[]): Promise<void> {
+  const filterRepo = args[0];
+  const store = await loadBuiltStore();
+  const records = listBuiltRecords(store, filterRepo);
+  console.log(formatBuiltList(records));
+}
+
+async function cmdBuiltStatus(args: string[]): Promise<void> {
+  const repoName = args[0];
+  if (!repoName) {
+    console.error('Usage: artifact built status <repo-name>');
+    process.exit(1);
+  }
+
+  const record = await getBuiltRecord(repoName);
+  if (!record) {
+    console.error(`No built record for "${repoName}".`);
+    console.error('Use "artifact built add" to attach artifact paths first.');
+    process.exit(1);
+  }
+
+  console.log(formatBuiltRecord(record));
+}
+
 // ── Main router ─────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -1033,6 +1087,19 @@ async function main(): Promise<void> {
       await cmdOrgBans();
     } else {
       console.error(`Unknown org command: ${subCmd}`);
+      usage();
+    }
+  } else if (cmd === 'built') {
+    const subCmd = args[1];
+    if (subCmd === 'add') {
+      await cmdBuiltAdd(args.slice(2));
+    } else if (subCmd === 'ls') {
+      await cmdBuiltLs(args.slice(2));
+    } else if (subCmd === 'status') {
+      await cmdBuiltStatus(args.slice(2));
+    } else {
+      console.error(`Unknown built command: ${subCmd ?? '(none)'}`);
+      console.error('Available: add, ls, status');
       usage();
     }
   } else {
