@@ -53,7 +53,7 @@ function normalize(text: string): string {
 }
 
 /** Check if a text block contains a phrase (fuzzy: case-insensitive, whitespace-collapsed) */
-function containsPhrase(haystack: string, needle: string): boolean {
+export function containsPhrase(haystack: string, needle: string): boolean {
   const h = normalize(haystack);
   const n = normalize(needle);
   // Direct substring check
@@ -69,7 +69,7 @@ function containsPhrase(haystack: string, needle: string): boolean {
 }
 
 /** Check if an atom value or ID appears in the artifact text */
-function atomCited(haystack: string, atom: TruthAtom): boolean {
+export function atomCited(haystack: string, atom: TruthAtom): boolean {
   const h = normalize(haystack);
   // Check atom ID
   if (h.includes(atom.id.toLowerCase())) return true;
@@ -96,7 +96,7 @@ function escapeRegex(s: string): string {
 
 // ── Core verification ───────────────────────────────────────────
 
-function verify(
+export function verify(
   artifactText: string,
   packet: DecisionPacket,
   atoms: TruthAtom[],

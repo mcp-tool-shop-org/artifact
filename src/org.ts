@@ -320,7 +320,7 @@ interface OrgBan {
   reason: string;
 }
 
-function computeBans(ledger: LedgerEntry[], n = 8): OrgBan[] {
+export function computeBans(ledger: LedgerEntry[], n = 8): OrgBan[] {
   const recent = ledger.slice(-n);
   if (recent.length < 3) return []; // Not enough history to ban
 
@@ -409,19 +409,23 @@ export async function recordMandateSuccess(): Promise<void> {
   await saveMandateStore({ rejections: 0 });
 }
 
+/** Pure logic for promotion mandate — testable without file I/O */
+export function shouldMandatePromotionPure(
+  ledgerLength: number,
+  promotionCount: number,
+  rejections: number,
+): boolean {
+  if (ledgerLength < PROMOTION_MANDATE_MIN_ENTRIES) return false;
+  if (promotionCount > 0) return false;
+  if (rejections >= PROMOTION_MANDATE_MAX_REJECTIONS) return false;
+  return true;
+}
+
 /** Check if Promotion mandate should be active */
 export async function shouldMandatePromotion(ledger: LedgerEntry[]): Promise<boolean> {
-  if (ledger.length < PROMOTION_MANDATE_MIN_ENTRIES) return false;
-
-  // Already have Promotion entries? No mandate needed.
   const promotionCount = ledger.filter(e => e.tier === 'Promotion').length;
-  if (promotionCount > 0) return false;
-
-  // Too many rejected attempts? Stop mandating.
   const store = await loadMandateStore();
-  if (store.rejections >= PROMOTION_MANDATE_MAX_REJECTIONS) return false;
-
-  return true;
+  return shouldMandatePromotionPure(ledger.length, promotionCount, store.rejections);
 }
 
 /** Soft recency penalties — advisory, not bans */

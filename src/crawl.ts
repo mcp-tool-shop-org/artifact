@@ -23,6 +23,7 @@ import * as blueprint from './blueprint.js';
 import { review } from './review.js';
 import { generateCatalog } from './catalog.js';
 import type { CatalogFormat } from './catalog.js';
+import { publish } from './publish.js';
 import type { RepoContext, RepoType, DecisionPacket } from './types.js';
 
 // ── Types ────────────────────────────────────────────────────────
@@ -56,6 +57,10 @@ export interface CrawlOptions {
   // Rate control
   token?: string;
   minRateRemaining?: number;
+
+  // Publish
+  publish?: boolean;
+  pagesRepo?: string;
 }
 
 export interface CrawlResult {
@@ -414,6 +419,22 @@ export async function crawlRepos(opts: CrawlOptions): Promise<CrawlResult> {
     console.error('  Gaps:');
     for (const g of status.gaps) {
       console.error(`    ${g}`);
+    }
+  }
+
+  // ── Publish ──
+  if (opts.publish && opts.pagesRepo) {
+    const pubToken = opts.token ?? process.env.GITHUB_TOKEN;
+    if (!pubToken) {
+      console.error('\n  Publish skipped: GITHUB_TOKEN not set.');
+    } else {
+      console.error('\n--- Publish ---');
+      try {
+        const pubResult = await publish({ pagesRepo: opts.pagesRepo, token: pubToken });
+        console.error(`  ${pubResult.filesUpdated} files → ${pubResult.pagesUrl}`);
+      } catch (err) {
+        console.error(`  Publish failed: ${err instanceof Error ? err.message : err}`);
+      }
     }
   }
 

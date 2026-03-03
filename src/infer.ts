@@ -67,7 +67,7 @@ function computeEvidenceStrength(bundle: TruthBundle): number {
 
 // ── Archetype detection ─────────────────────────────────────────
 
-function detectArchetype(atoms: TruthAtom[], declaredType: RepoType): RepoType {
+export function detectArchetype(atoms: TruthAtom[], declaredType: RepoType): RepoType {
   if (declaredType !== 'unknown') return declaredType;
 
   const hasCli = hasAtoms(atoms, 'cli_command', 'cli_flag');
@@ -192,7 +192,7 @@ const ARCHETYPE_MODIFIERS: Partial<Record<RepoType, Partial<Record<Tier, number>
   R9_brand_meta:     { Creator: +0.20, Promotion: +0.05 },
 };
 
-function computeTierWeights(
+export function computeTierWeights(
   bottleneck: PrimaryBottleneck,
   archetype: RepoType,
   evidence: number,

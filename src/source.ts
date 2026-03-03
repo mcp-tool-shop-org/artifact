@@ -134,7 +134,7 @@ export class LocalRepoSource implements RepoSource {
 
 // ── Semaphore (concurrency limiter) ──────────────────────────────
 
-class Semaphore {
+export class Semaphore {
   private queue: Array<() => void> = [];
   private active = 0;
 
@@ -193,6 +193,10 @@ export interface RemoteSourceOptions {
   refresh?: boolean;
   /** Cache TTL in hours (default: 24). Blob cache ignores TTL (SHA-keyed). */
   cacheTtlHours?: number;
+  /** Injectable fetch for testing (defaults to globalThis.fetch) */
+  fetchImpl?: typeof globalThis.fetch;
+  /** Injectable clock for testing (defaults to Date.now) */
+  nowMs?: () => number;
 }
 
 // ── RemoteRepoSource ─────────────────────────────────────────────
@@ -211,18 +215,22 @@ export class RemoteRepoSource implements RepoSource {
   private readonly repo: string;
   private readonly ref: string | undefined;
   private readonly token: string | undefined;
-  private readonly opts: Required<RemoteSourceOptions>;
+  private readonly opts: Required<Pick<RemoteSourceOptions, 'refresh' | 'cacheTtlHours'>>;
+  private readonly fetchImpl: typeof globalThis.fetch;
+  private readonly nowMs: () => number;
   private readonly sem = new Semaphore(5);
 
   // Stats for cache logging
-  private apiCalls = 0;
-  private cacheHits = 0;
+  apiCalls = 0;
+  cacheHits = 0;
 
   constructor(owner: string, repo: string, ref?: string, token?: string, opts?: RemoteSourceOptions) {
     this.owner = owner;
     this.repo = repo;
     this.ref = ref;
     this.token = token;
+    this.fetchImpl = opts?.fetchImpl ?? globalThis.fetch;
+    this.nowMs = opts?.nowMs ?? Date.now;
     this.opts = {
       refresh: opts?.refresh ?? false,
       cacheTtlHours: opts?.cacheTtlHours ?? 24,
@@ -279,7 +287,7 @@ export class RemoteRepoSource implements RepoSource {
   }
 
   private isFresh(retrievedAt: string): boolean {
-    const age = Date.now() - new Date(retrievedAt).getTime();
+    const age = this.nowMs() - new Date(retrievedAt).getTime();
     return age < this.opts.cacheTtlHours * 3600_000;
   }
 
@@ -308,7 +316,7 @@ export class RemoteRepoSource implements RepoSource {
     }
 
     this.apiCalls++;
-    const res = await fetch(url, { headers });
+    const res = await this.fetchImpl(url, { headers });
 
     if (res.status === 304) {
       return {
@@ -493,7 +501,7 @@ export class RemoteRepoSource implements RepoSource {
       const url = `https://api.github.com/repos/${this.owner}/${this.repo}/contents/${normalized}?ref=${ref}`;
 
       this.apiCalls++;
-      const res = await fetch(url, { headers: this.baseHeaders() });
+      const res = await this.fetchImpl(url, { headers: this.baseHeaders() });
       if (!res.ok) {
         this.fileCache.set(normalized, null);
         return null;

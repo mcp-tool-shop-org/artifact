@@ -23,8 +23,9 @@
  *   org status|ledger|bans      Org-wide curation info
  */
 
-import { resolve, basename, dirname } from 'node:path';
-import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { resolve, basename, dirname, join } from 'node:path';
+import { readFile, writeFile, mkdir, unlink, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { connect } from './ollama.js';
 import { drive as curatorDrive } from './curator.js';
 import { driveFallback } from './fallback.js';
@@ -41,6 +42,7 @@ import { buildpack } from './buildpack.js';
 import { verifyArtifact, formatVerifyResult } from './verify.js';
 import { loadBuiltStore, addArtifactPaths, getBuiltRecord, getToolVersion, listBuiltRecords, formatBuiltRecord, formatBuiltList } from './built.js';
 import { crawlRepos } from './crawl.js';
+import { publish } from './publish.js';
 import { inferProfile, formatProfileForPrompt, formatProfileForDisplay } from './infer.js';
 import { getPersona, getPersonaByName, loadConfig, saveConfig, formatWhoami, formatPersonaCard, formatAbout, PERSONA_NAMES } from './persona.js';
 import { LocalRepoSource, RemoteRepoSource, resolveOutputDir, resolveRepoName } from './source.js';
@@ -91,6 +93,8 @@ Commands:
   org ledger [n]              Last N decisions (default: 10).
   org bans                    Current auto-bans with reasons.
   crawl [options]             Batch-curate multiple repos.
+  publish [options]           Push catalog to a GitHub Pages repo.
+  privacy                    Show storage locations + data policy.
   built add <repo> <path...>  Attach artifact file paths to tracking.
   built ls [repo-name]        List built status (all or one repo).
   built status <repo-name>    Detailed tracking for one repo.
@@ -137,6 +141,15 @@ Crawl options:
   --review               Also generate review cards.
   --web                  Enable web recommendations.
   --format <md|html>     Catalog format (default: md).
+  --publish              Publish catalog after crawl completes.
+  --pages-repo <o/r>     Target repo for publishing (required with --publish).
+
+Publish options:
+  --pages-repo <owner/repo>  Target repo with GitHub Pages enabled (required).
+  --branch <name>            Branch to push to (default: main).
+  --path <dir>               Directory in repo (default: docs).
+  --message <msg>            Commit message.
+  --dry-run                  Show what would be published without pushing.
 
 Remote options (for drive, infer, ritual, blueprint, review, buildpack, verify, built):
   --remote <owner/repo>  Analyze a GitHub repo without a local clone.
@@ -941,7 +954,47 @@ async function cmdDoctor(): Promise<void> {
     checks.push({ label: 'Git', status: 'warn', detail: 'not found' });
   }
 
-  // 6. Last run
+  // 6. GITHUB_TOKEN
+  const ghToken = process.env.GITHUB_TOKEN;
+  if (ghToken) {
+    try {
+      const res = await fetch('https://api.github.com/rate_limit', {
+        headers: { 'Authorization': `Bearer ${ghToken}`, 'Accept': 'application/vnd.github+json' },
+      });
+      if (res.ok) {
+        const data = await res.json() as { resources: { core: { remaining: number; limit: number } } };
+        const { remaining, limit } = data.resources.core;
+        checks.push({ label: 'Token', status: 'pass', detail: `${remaining}/${limit} API calls remaining` });
+      } else {
+        checks.push({ label: 'Token', status: 'warn', detail: `set but invalid (${res.status})` });
+      }
+    } catch {
+      checks.push({ label: 'Token', status: 'warn', detail: 'set but could not verify (network error)' });
+    }
+  } else {
+    checks.push({ label: 'Token', status: 'info', detail: 'GITHUB_TOKEN not set (needed for remote/crawl/publish)' });
+  }
+
+  // 7. Cache
+  const cacheDir = join(homedir(), '.artifact', 'cache', 'remote');
+  if (existsSync(cacheDir)) {
+    try {
+      const owners = await readdir(cacheDir);
+      let repoCount = 0;
+      for (const owner of owners) {
+        const ownerDir = join(cacheDir, owner);
+        const repos = await readdir(ownerDir).catch(() => []);
+        repoCount += repos.length;
+      }
+      checks.push({ label: 'Cache', status: 'info', detail: `${repoCount} repos cached` });
+    } catch {
+      checks.push({ label: 'Cache', status: 'info', detail: 'could not read cache dir' });
+    }
+  } else {
+    checks.push({ label: 'Cache', status: 'info', detail: 'empty (no remote repos cached yet)' });
+  }
+
+  // 8. Last run
   try {
     await readFile(resolve('.', '.artifact', 'decision_packet.json'), 'utf-8');
     checks.push({ label: 'Last run', status: 'info', detail: 'decision packet found in current directory' });
@@ -1001,6 +1054,76 @@ async function cmdAbout(): Promise<void> {
   const version = await getVersion();
   const persona = await getPersona();
   console.log(formatAbout(version, persona));
+}
+
+// ── Privacy command ─────────────────────────────────────────────
+
+function cmdPrivacy(): void {
+  console.log(`artifact privacy
+
+Local storage:
+  ~/.artifact/config.json        Persona + settings
+  ~/.artifact/org/               Ledger, status, catalog, publish
+  ~/.artifact/repos/             Remote repo decisions + history
+  ~/.artifact/cache/remote/      GitHub API disk cache (ETag + blobs)
+  <repo>/.artifact/              Local repo decisions + history
+
+Network (only when explicitly invoked):
+  api.github.com                 --remote, crawl, publish
+  localhost:11434                Ollama (Curator mode only)
+
+No telemetry. No analytics. No phone-home.
+
+To delete all data:  rm -rf ~/.artifact/
+To delete cache:     rm -rf ~/.artifact/cache/`);
+}
+
+// ── Publish command ─────────────────────────────────────────────
+
+async function cmdPublish(args: string[]): Promise<void> {
+  const pagesRepo = flagValue(args, '--pages-repo');
+  if (!pagesRepo) {
+    console.error('Error: --pages-repo <owner/repo> is required.');
+    console.error('Example: artifact publish --pages-repo myorg/artifact-wall');
+    process.exit(1);
+  }
+  if (!pagesRepo.includes('/')) {
+    console.error(`Error: --pages-repo must be "owner/repo", got "${pagesRepo}".`);
+    process.exit(1);
+  }
+
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) {
+    console.error('Error: GITHUB_TOKEN environment variable is required for publishing.');
+    console.error('');
+    console.error('Set it:');
+    console.error('  export GITHUB_TOKEN=ghp_...');
+    console.error('');
+    console.error('Create a token at: https://github.com/settings/tokens');
+    console.error('Required scope: "repo" (or "public_repo" for public repos).');
+    process.exit(1);
+  }
+
+  const branch = flagValue(args, '--branch') ?? 'main';
+  const path = flagValue(args, '--path') ?? 'docs';
+  const message = flagValue(args, '--message') ?? 'Update artifact catalog';
+  const dryRun = args.includes('--dry-run');
+
+  const result = await publish({
+    pagesRepo,
+    branch,
+    path,
+    message,
+    dryRun,
+    token,
+  });
+
+  if (!dryRun) {
+    console.error(`\nPublished ${result.filesUpdated} files → ${result.pagesUrl}`);
+    if (result.commitSha) {
+      console.error(`Last commit: ${result.commitSha.slice(0, 8)}`);
+    }
+  }
 }
 
 // ── Built commands ──────────────────────────────────────────────
@@ -1076,6 +1199,8 @@ async function cmdCrawl(args: string[]): Promise<void> {
   const emitBlueprint = !args.includes('--no-blueprint');
   const emitReview = args.includes('--review');
   const formatRaw = flagValue(args, '--format');
+  const publishFlag = args.includes('--publish');
+  const pagesRepo = flagValue(args, '--pages-repo');
   const token = process.env.GITHUB_TOKEN;
 
   if (!orgName && !fromFile) {
@@ -1097,6 +1222,8 @@ async function cmdCrawl(args: string[]): Promise<void> {
     curateOrg: true,
     format: formatRaw === 'html' ? 'html' : 'md',
     token,
+    publish: publishFlag,
+    pagesRepo,
   });
 
   if (result.failed > 0) process.exit(1);
@@ -1140,6 +1267,10 @@ async function main(): Promise<void> {
     await cmdCatalog(args.slice(1));
   } else if (cmd === 'crawl') {
     await cmdCrawl(args.slice(1));
+  } else if (cmd === 'publish') {
+    await cmdPublish(args.slice(1));
+  } else if (cmd === 'privacy') {
+    cmdPrivacy();
   } else if (cmd === 'memory') {
     const subCmd = args[1];
     if (subCmd === 'show') {

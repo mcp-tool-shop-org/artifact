@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-03-03
+
+### Added
+
+- Phase 18: Publish — `artifact publish --pages-repo owner/repo` pushes catalog to GitHub Pages via Contents API
+- `artifact privacy` — show all storage locations, network targets, and data deletion instructions
+- Enhanced `artifact doctor` — GITHUB_TOKEN validation + cache size reporting
+- `--publish` + `--pages-repo` flags for `artifact crawl` — auto-publish after batch runs
+- Publish bundle at `~/.artifact/org/publish/` (index.html, catalog.json, status.json)
+- Dry-run support for publish (`--dry-run`)
+- 25 unit tests across 5 test files (truth, infer, org, verify, source)
+- Injection points for testability (fetchImpl, nowMs in RemoteSourceOptions)
+
 ## [1.3.0] - 2026-03-03
 
 ### Added

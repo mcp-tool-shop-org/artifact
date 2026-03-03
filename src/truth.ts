@@ -311,7 +311,7 @@ async function extractSource(source: RepoSource): Promise<TruthAtom[]> {
 // ── Dedupe + quality ────────────────────────────────────────────
 
 /** Dedupe atoms by value (case-insensitive), keeping highest confidence */
-function dedupe(atoms: TruthAtom[]): TruthAtom[] {
+export function dedupe(atoms: TruthAtom[]): TruthAtom[] {
   const seen = new Map<string, TruthAtom>();
   for (const atom of atoms) {
     const key = `${atom.type}:${atom.value.toLowerCase().trim()}`;
@@ -324,7 +324,7 @@ function dedupe(atoms: TruthAtom[]): TruthAtom[] {
 }
 
 /** Cap atoms per type, preferring higher confidence */
-function capPerType(atoms: TruthAtom[]): TruthAtom[] {
+export function capPerType(atoms: TruthAtom[]): TruthAtom[] {
   const byType = new Map<string, TruthAtom[]>();
   for (const atom of atoms) {
     const list = byType.get(atom.type) ?? [];
@@ -341,7 +341,7 @@ function capPerType(atoms: TruthAtom[]): TruthAtom[] {
 }
 
 /** Prefer doc-sourced atoms over code-sourced when both exist for same value */
-function preferDocs(atoms: TruthAtom[]): TruthAtom[] {
+export function preferDocs(atoms: TruthAtom[]): TruthAtom[] {
   // Docs = package.json, README.md, CHANGELOG.md, pyproject.toml
   const docFiles = new Set(['package.json', 'pyproject.toml', 'README.md', 'CHANGELOG.md', 'CHANGES.md']);
 

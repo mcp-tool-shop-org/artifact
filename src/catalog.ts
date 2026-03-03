@@ -498,3 +498,40 @@ export async function generateCatalog(opts: { all?: boolean; format?: CatalogFor
 
   return result;
 }
+
+// ── Publish bundle ──────────────────────────────────────────────
+
+export interface PublishBundle {
+  dir: string;        // ~/.artifact/org/publish/
+  files: string[];    // filenames in dir
+}
+
+/**
+ * Generate a self-contained publish directory at ~/.artifact/org/publish/.
+ * Contains index.html + catalog.json + status.json — ready for deployment.
+ */
+export async function generatePublishBundle(): Promise<PublishBundle> {
+  // Ensure catalog + HTML exist
+  await generateCatalog({ all: true, format: 'html' });
+
+  const orgDir = join(homedir(), '.artifact', 'org');
+  const publishDir = join(orgDir, 'publish');
+  await mkdir(publishDir, { recursive: true });
+
+  // index.html from CATALOG.html
+  const html = await readFile(join(orgDir, 'CATALOG.html'), 'utf-8');
+  await writeFile(join(publishDir, 'index.html'), html, 'utf-8');
+
+  // catalog.json (copy)
+  const catalog = await readFile(join(orgDir, 'catalog.json'), 'utf-8');
+  await writeFile(join(publishDir, 'catalog.json'), catalog, 'utf-8');
+
+  // status.json from org status
+  const status = await computeStatus();
+  await writeFile(join(publishDir, 'status.json'), JSON.stringify(status, null, 2) + '\n', 'utf-8');
+
+  return {
+    dir: publishDir,
+    files: ['index.html', 'catalog.json', 'status.json'],
+  };
+}
