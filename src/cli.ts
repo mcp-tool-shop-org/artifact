@@ -5,6 +5,8 @@
  *
  * Commands:
  *   drive [repo-path]           Run the Curator freshness driver
+ *   blueprint [repo-path]       Generate Blueprint Pack from latest decision
+ *   review [repo-path]          Print a 4-block editorial review card
  *   memory show [--org]         Show memory entries
  *   memory forget <repo-name>   Forget a repo's memory
  *   memory prune <days>         Prune old entries
@@ -23,6 +25,8 @@ import * as history from './history.js';
 import * as mem from './memory.js';
 import { buildQueryMenu, collectFindings, synthesizeBrief, saveBrief, formatWebBrief } from './web.js';
 import * as org from './org.js';
+import * as blueprint from './blueprint.js';
+import { review } from './review.js';
 import type { RepoContext, RepoType, DecisionPacket, WebOptions } from './types.js';
 
 function usage(): never {
@@ -30,6 +34,8 @@ function usage(): never {
 
 Commands:
   drive [repo-path]           Run the Curator freshness driver.
+  blueprint [repo-path]       Generate Blueprint Pack from latest decision.
+  review [repo-path]          Print a 4-block editorial review card.
   memory show [--org]         Show repo memory (or --org for org-level).
   memory forget <repo-name>   Forget all memory for a repo.
   memory prune <days>         Prune entries older than N days.
@@ -45,6 +51,7 @@ Commands:
 Drive options:
   --no-curator         Skip Ollama, use deterministic fallback only.
   --curator-speak      Print Curator callouts (veto/twist/pick/risk).
+  --blueprint          Also generate Blueprint Pack after drive.
   --type <type>        Repo type (R1_tooling_cli, etc.). Default: unknown.
   --web                Enable web recommendations.
   --web-cache-ttl <h>  Cache TTL in hours (default: 72).
@@ -76,6 +83,7 @@ function flagValueIndices(args: string[], flags: string[]): Set<number> {
 async function cmdDrive(args: string[]): Promise<void> {
   const noCurator = args.includes('--no-curator');
   const curatorSpeak = args.includes('--curator-speak');
+  const emitBlueprint = args.includes('--blueprint');
   const curateOrg = args.includes('--curate-org');
   const repoType: RepoType = (flagValue(args, '--type') as RepoType) ?? 'unknown';
 
@@ -205,11 +213,13 @@ async function cmdDrive(args: string[]): Promise<void> {
     console.error('');
   }
 
-  // Write decision packet
+  // Write decision packet + truth bundle
   const outDir = resolve(repoPath, '.artifact');
   await mkdir(outDir, { recursive: true });
   const outPath = resolve(outDir, 'decision_packet.json');
   await writeFile(outPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
+  const bundlePath = resolve(outDir, 'truth_bundle.json');
+  await writeFile(bundlePath, JSON.stringify(truthBundle, null, 2) + '\n', 'utf-8');
 
   // Append to rotation history
   await history.append(repoPath, {
@@ -229,6 +239,16 @@ async function cmdDrive(args: string[]): Promise<void> {
   if (curateOrg) {
     await org.recordDecision(packet);
     console.error('Org: ledger entry recorded, status recomputed');
+  }
+
+  // Generate Blueprint Pack if requested
+  if (emitBlueprint) {
+    const result = await blueprint.generate(repoPath, packet);
+    if (result) {
+      console.error(`Blueprint: ${result.markdown_path}`);
+      console.error(`Blueprint: ${result.json_path}`);
+      console.error(`Blueprint: ${result.assets_path}/`);
+    }
   }
 
   // Output the packet to stdout
@@ -409,6 +429,45 @@ async function cmdOrgBans(): Promise<void> {
   }
 }
 
+// ── Blueprint command ────────────────────────────────────────────
+
+async function cmdBlueprint(args: string[]): Promise<void> {
+  const repoPath = resolve(args[0] ?? '.');
+  const repoName = basename(repoPath);
+
+  const result = await blueprint.generate(repoPath);
+  if (!result) {
+    console.error(`No decision packet found at ${resolve(repoPath, '.artifact', 'decision_packet.json')}`);
+    console.error('Run "artifact drive" first to generate a decision.');
+    process.exit(1);
+  }
+
+  console.error(`Blueprint generated for "${repoName}":`);
+  console.error(`  ${result.markdown_path}`);
+  console.error(`  ${result.json_path}`);
+  console.error(`  ${result.assets_path}/`);
+
+  // Print the markdown to stdout
+  const { readFile: rf } = await import('node:fs/promises');
+  const md = await rf(result.markdown_path, 'utf-8');
+  console.log(md);
+}
+
+// ── Review command ──────────────────────────────────────────────
+
+async function cmdReview(args: string[]): Promise<void> {
+  const repoPath = resolve(args[0] ?? '.');
+
+  const card = await review(repoPath);
+  if (!card) {
+    console.error(`No decision packet found at ${resolve(repoPath, '.artifact', 'decision_packet.json')}`);
+    console.error('Run "artifact drive" first to generate a decision.');
+    process.exit(1);
+  }
+
+  console.log(card);
+}
+
 // ── Main router ─────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -419,6 +478,10 @@ async function main(): Promise<void> {
 
   if (cmd === 'drive') {
     await cmdDrive(args.slice(1));
+  } else if (cmd === 'blueprint') {
+    await cmdBlueprint(args.slice(1));
+  } else if (cmd === 'review') {
+    await cmdReview(args.slice(1));
   } else if (cmd === 'memory') {
     const subCmd = args[1];
     if (subCmd === 'show') {
