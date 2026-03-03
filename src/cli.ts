@@ -36,6 +36,7 @@ import type { CatalogFormat } from './catalog.js';
 import { buildpack } from './buildpack.js';
 import { verifyArtifact, formatVerifyResult } from './verify.js';
 import { inferProfile, formatProfileForPrompt, formatProfileForDisplay } from './infer.js';
+import { getPersona, loadConfig, saveConfig, formatWhoami, formatPersonaCard, PERSONA_NAMES } from './persona.js';
 import type { RepoContext, RepoType, DecisionPacket, WebOptions, InferenceProfile } from './types.js';
 
 function usage(): never {
@@ -58,6 +59,9 @@ Commands:
   season set <name>           Activate a season.
   season status               Show active season rules.
   season end                  End the current season.
+  whoami                      Print active persona name + motto.
+  config get <key>            Read a config value.
+  config set <key> <value>    Set a config value (e.g., agent_name).
   org status                  Coverage, diversity, gaps.
   org ledger [n]              Last N decisions (default: 10).
   org bans                    Current auto-bans with reasons.
@@ -322,10 +326,12 @@ async function cmdDrive(args: string[]): Promise<void> {
     }
   }
 
-  // Print callouts if requested
+  // Print callouts if requested (prefixed with persona name)
   if (curatorSpeak) {
+    const persona = await getPersona();
     const c = packet.callouts;
     console.error('');
+    console.error(`${persona.name} says:`);
     if (c.veto) console.error(`  Veto:  ${c.veto}`);
     if (c.twist) console.error(`  Twist: ${c.twist}`);
     if (c.pick) console.error(`  Pick:  ${c.pick}`);
@@ -741,6 +747,65 @@ async function cmdRitual(args: string[]): Promise<void> {
   console.error(`Diversity: ${status.diversity_score}/100`);
 }
 
+// ── Whoami command ──────────────────────────────────────────────
+
+async function cmdWhoami(args: string[]): Promise<void> {
+  const verbose = args.includes('--verbose') || args.includes('-v');
+  const persona = await getPersona();
+
+  if (verbose) {
+    console.log(formatPersonaCard(persona));
+  } else {
+    console.log(formatWhoami(persona));
+  }
+}
+
+// ── Config command ──────────────────────────────────────────────
+
+async function cmdConfigGet(args: string[]): Promise<void> {
+  const key = args[0];
+  if (!key) {
+    const config = await loadConfig();
+    for (const [k, v] of Object.entries(config)) {
+      console.log(`${k} = ${v}`);
+    }
+    return;
+  }
+  const config = await loadConfig();
+  const val = config[key];
+  if (val !== undefined) {
+    console.log(`${key} = ${val}`);
+  } else {
+    console.error(`Unknown config key: ${key}`);
+    process.exit(1);
+  }
+}
+
+async function cmdConfigSet(args: string[]): Promise<void> {
+  const key = args[0];
+  const value = args[1];
+  if (!key || !value) {
+    console.error('Usage: artifact config set <key> <value>');
+    console.error('Keys: agent_name');
+    console.error(`Available personas: ${PERSONA_NAMES.join(', ')}`);
+    process.exit(1);
+  }
+
+  if (key === 'agent_name') {
+    const lower = value.toLowerCase();
+    if (!PERSONA_NAMES.includes(lower)) {
+      console.error(`Unknown persona: "${value}"`);
+      console.error(`Available: ${PERSONA_NAMES.join(', ')}`);
+      process.exit(1);
+    }
+  }
+
+  const config = await loadConfig();
+  config[key] = value.toLowerCase();
+  await saveConfig(config);
+  console.log(`Set ${key} = ${value.toLowerCase()}`);
+}
+
 // ── Main router ─────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -791,6 +856,18 @@ async function main(): Promise<void> {
       await cmdSeasonEnd();
     } else {
       console.error(`Unknown season command: ${subCmd}`);
+      usage();
+    }
+  } else if (cmd === 'whoami') {
+    await cmdWhoami(args.slice(1));
+  } else if (cmd === 'config') {
+    const subCmd = args[1];
+    if (subCmd === 'get' || !subCmd) {
+      await cmdConfigGet(args.slice(2));
+    } else if (subCmd === 'set') {
+      await cmdConfigSet(args.slice(2));
+    } else {
+      console.error(`Unknown config command: ${subCmd}`);
       usage();
     }
   } else if (cmd === 'org') {

@@ -13,6 +13,7 @@
 
 import type { DecisionPacket, TruthAtom, TruthBundle } from './types.js';
 import { loadPacket, loadTruthBundle } from './blueprint.js';
+import { getPersona } from './persona.js';
 
 /** Find atom by ID */
 function findAtom(atoms: TruthAtom[], id: string): TruthAtom | undefined {
@@ -74,10 +75,15 @@ interface ReviewJson {
   contract_violations: ContractViolation[];
 }
 
-function buildReviewCard(packet: DecisionPacket, atoms: TruthAtom[]): ReviewCard {
+async function buildReviewCard(packet: DecisionPacket, atoms: TruthAtom[]): Promise<ReviewCard> {
   const lines: string[] = [];
   const violations: ContractViolation[] = [];
   const format = packet.format_candidates[0] ?? 'unknown';
+
+  // ── Persona header ──
+  const persona = await getPersona();
+  lines.push(`--- ${persona.name}'s Review ---`);
+  lines.push('');
 
   // ── 1. Pick ──
   const seasonNote = packet.season && packet.season !== 'none'
@@ -286,5 +292,5 @@ export async function review(repoPath: string): Promise<ReviewResult | null> {
   const truthBundle = await loadTruthBundle(repoPath);
   const atoms = truthBundle?.atoms ?? [];
 
-  return buildReviewCard(packet, atoms);
+  return await buildReviewCard(packet, atoms);
 }

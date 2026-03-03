@@ -18,6 +18,7 @@
 
 import { resolve } from 'node:path';
 import { loadPacket, loadTruthBundle, FORMAT_HINTS } from './blueprint.js';
+import { getPersona, formatPersonaForPrompt } from './persona.js';
 import type { DecisionPacket, TruthAtom, TruthBundle, SelectedHook } from './types.js';
 
 // ── Atom formatting ─────────────────────────────────────────────
@@ -151,21 +152,23 @@ function buildOutlineForPrompt(packet: DecisionPacket, atoms: TruthAtom[]): stri
 
 // ── Build the prompt packet ─────────────────────────────────────
 
-function buildPromptPacket(
+async function buildPromptPacket(
   packet: DecisionPacket,
   atoms: TruthAtom[],
-): string {
+): Promise<string> {
   const format = packet.format_candidates[0] ?? 'unknown';
   const formatHint = FORMAT_HINTS[format] ?? format;
   const alternates = packet.format_candidates.slice(1);
 
   const sections: string[] = [];
 
-  // ── Role instruction ──
+  // ── Role instruction (persona-driven) ──
+  const persona = await getPersona();
   sections.push(`=== ROLE ===
-You are a technical artifact builder. You will create a single, complete artifact
-for the repo "${packet.repo_name}". Every claim must trace to a truth atom.
-Do not invent facts. Do not produce generic content.`);
+${formatPersonaForPrompt(persona)}
+
+You will create a single, complete artifact for the repo "${packet.repo_name}".
+Every claim must trace to a truth atom. Do not invent facts. Do not produce generic content.`);
 
   // ── Pick ──
   sections.push(`=== PICK ===
@@ -339,7 +342,7 @@ export async function buildpack(repoPath: string): Promise<BuildpackResult | nul
   const truthBundle = await loadTruthBundle(repoPath);
   const atoms = truthBundle?.atoms ?? [];
 
-  const text = buildPromptPacket(packet, atoms);
+  const text = await buildPromptPacket(packet, atoms);
   const json = buildJson(packet, atoms);
 
   return { text, json };
