@@ -83,7 +83,7 @@ function apiHeaders(token?: string): Record<string, string> {
 }
 
 /** Parse Link header for next page URL */
-function parseNextLink(linkHeader: string | null): string | null {
+export function parseNextLink(linkHeader: string | null): string | null {
   if (!linkHeader) return null;
   const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
   return match ? match[1] : null;

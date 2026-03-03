@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "verify": "tsc --noEmit",
-    "test": "node --test dist/**/*.test.js"
+    "test": "node --test --test-timeout=15000 dist/**/*.test.js"
   },
   "keywords": [
     "artifact",

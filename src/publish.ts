@@ -23,6 +23,8 @@ export interface PublishOptions {
   message?: string;         // commit message
   dryRun?: boolean;
   token: string;
+  /** Injectable fetch for testing (defaults to globalThis.fetch) */
+  fetchImpl?: typeof globalThis.fetch;
 }
 
 export interface PublishResult {
@@ -41,7 +43,7 @@ function apiHeaders(token: string): Record<string, string> {
   };
 }
 
-function derivePagesUrl(pagesRepo: string): string {
+export function derivePagesUrl(pagesRepo: string): string {
   const [owner, repo] = pagesRepo.split('/');
   // Special case: owner.github.io repo
   if (repo === `${owner}.github.io`) {
@@ -51,14 +53,15 @@ function derivePagesUrl(pagesRepo: string): string {
 }
 
 /** Get existing file SHA from the repo (needed for updates). Returns null if file doesn't exist. */
-async function getExistingSha(
+export async function getExistingSha(
   pagesRepo: string,
   filePath: string,
   branch: string,
   token: string,
+  fetchFn: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<string | null> {
   const url = `https://api.github.com/repos/${pagesRepo}/contents/${filePath}?ref=${branch}`;
-  const res = await fetch(url, { headers: apiHeaders(token) });
+  const res = await fetchFn(url, { headers: apiHeaders(token) });
 
   if (res.status === 404) return null;
 
@@ -72,7 +75,7 @@ async function getExistingSha(
 }
 
 /** Create or update a file via the Contents API. */
-async function putFile(
+export async function putFile(
   pagesRepo: string,
   filePath: string,
   content: string,
@@ -80,6 +83,7 @@ async function putFile(
   message: string,
   existingSha: string | null,
   token: string,
+  fetchFn: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<string | null> {
   const url = `https://api.github.com/repos/${pagesRepo}/contents/${filePath}`;
 
@@ -92,7 +96,7 @@ async function putFile(
     body.sha = existingSha;
   }
 
-  const res = await fetch(url, {
+  const res = await fetchFn(url, {
     method: 'PUT',
     headers: { ...apiHeaders(token), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

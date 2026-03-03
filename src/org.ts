@@ -26,6 +26,7 @@ import type {
   Tier, Season, LedgerEntry, OrgStatus, SignatureMove,
   CurationBrief, DecisionPacket, InferenceProfile,
 } from './types.js';
+import { TIERS } from './constants.js';
 
 // ── Paths ────────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ export const SEASON_NAMES = Object.keys(SEASONS);
 
 // ── Season × Inference Weight Merging ────────────────────────────
 
-const ALL_TIERS: Tier[] = ['Exec', 'Dev', 'Creator', 'Fun', 'Promotion'];
+const ALL_TIERS = TIERS;
 
 /**
  * Merge inference profile weights with active season tier_weights.

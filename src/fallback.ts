@@ -5,7 +5,7 @@
  */
 
 import type { DecisionPacket, RepoContext, HistoryStore, Tier, TruthAtom, SelectedHook, InferenceProfile } from './types.js';
-import { TIERS, FORMAT_FAMILIES } from './curator.js';
+import { TIERS, FORMAT_FAMILIES } from './constants.js';
 import { recentTiers, recentFormats, recentAtomIds } from './history.js';
 
 const CONSTRAINT_DECK = [
@@ -16,7 +16,7 @@ const CONSTRAINT_DECK = [
 ];
 
 /** Simple deterministic hash from a string. */
-function hash(s: string): number {
+export function hash(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) {
     h = ((h << 5) - h + s.charCodeAt(i)) | 0;
@@ -25,22 +25,31 @@ function hash(s: string): number {
 }
 
 /** Pick N items from an array using a seed, avoiding items in the exclude set. */
-function seededPick<T>(arr: T[], n: number, seed: number, exclude: Set<string> = new Set()): T[] {
+export function seededPick<T>(arr: T[], n: number, seed: number, exclude: Set<string> = new Set()): T[] {
   const available = arr.filter(item => !exclude.has(String(item)));
   if (available.length === 0) return arr.slice(0, n);
   const result: T[] = [];
   let s = seed;
-  while (result.length < n && result.length < available.length) {
+  const maxIter = available.length * 10;
+  let iter = 0;
+  while (result.length < n && result.length < available.length && iter++ < maxIter) {
     s = ((s * 1103515245 + 12345) & 0x7fffffff);
     const idx = s % available.length;
     const pick = available[idx];
     if (!result.includes(pick)) result.push(pick);
   }
+  // If LCG cycle missed some items, fill sequentially
+  if (result.length < n) {
+    for (const item of available) {
+      if (result.length >= n) break;
+      if (!result.includes(item)) result.push(item);
+    }
+  }
   return result;
 }
 
 /** Pick the best atom for a given type, avoiding recently used IDs */
-function pickAtom(atoms: TruthAtom[], type: string, usedIds: Set<string>, seed: number): TruthAtom | null {
+export function pickAtom(atoms: TruthAtom[], type: string, usedIds: Set<string>, seed: number): TruthAtom | null {
   const candidates = atoms.filter(a => a.type === type && !usedIds.has(a.id));
   if (candidates.length === 0) {
     // Fall back to any of that type
@@ -52,7 +61,7 @@ function pickAtom(atoms: TruthAtom[], type: string, usedIds: Set<string>, seed: 
 }
 
 /** Pick hooks from truth atoms — deterministic, biased toward high-value types */
-function pickHooks(atoms: TruthAtom[], seed: number, usedIds: Set<string>): SelectedHook[] {
+export function pickHooks(atoms: TruthAtom[], seed: number, usedIds: Set<string>): SelectedHook[] {
   const hookTypes: Array<{ atomType: string; role: string }> = [
     { atomType: 'invariant', role: 'invariant_hook' },
     { atomType: 'core_object', role: 'name_hook' },
@@ -74,7 +83,7 @@ function pickHooks(atoms: TruthAtom[], seed: number, usedIds: Set<string>): Sele
 }
 
 /** Weighted tier selection using profile weights */
-function weightedTierSelect(
+export function weightedTierSelect(
   weights: Record<Tier, number>,
   seed: number,
   excludeTiers: Set<string>,

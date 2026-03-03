@@ -16,17 +16,17 @@ import { loadPacket, loadTruthBundle } from './blueprint.js';
 import { getPersona } from './persona.js';
 
 /** Find atom by ID */
-function findAtom(atoms: TruthAtom[], id: string): TruthAtom | undefined {
+export function findAtom(atoms: TruthAtom[], id: string): TruthAtom | undefined {
   return atoms.find(a => a.id === id);
 }
 
 /** Find atom by type */
-function findAtomByType(atoms: TruthAtom[], type: string): TruthAtom | undefined {
+export function findAtomByType(atoms: TruthAtom[], type: string): TruthAtom | undefined {
   return atoms.find(a => a.type === type);
 }
 
 /** Format a brief citation for an atom */
-function cite(atom: TruthAtom): string {
+export function cite(atom: TruthAtom): string {
   const truncVal = atom.value.length > 60
     ? atom.value.slice(0, 57) + '...'
     : atom.value;
@@ -75,7 +75,7 @@ interface ReviewJson {
   contract_violations: ContractViolation[];
 }
 
-async function buildReviewCard(packet: DecisionPacket, atoms: TruthAtom[]): Promise<ReviewCard> {
+export async function buildReviewCard(packet: DecisionPacket, atoms: TruthAtom[]): Promise<ReviewCard> {
   const lines: string[] = [];
   const violations: ContractViolation[] = [];
   const format = packet.format_candidates[0] ?? 'unknown';
