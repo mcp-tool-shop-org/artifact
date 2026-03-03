@@ -107,6 +107,11 @@ export interface DecisionPacket {
   selected_hooks: SelectedHook[];
   callouts: Callouts;
   driver_meta: DriverMeta;
+  // Phase 4: org curation (present when --curate-org)
+  season?: string;
+  org_bans_applied?: string[];
+  org_gap_bias?: string[];
+  signature_move?: string;
 }
 
 /** A hook chosen by the Curator, traced back to an atom */
@@ -188,4 +193,61 @@ export interface WebOptions {
   cacheTtlHours: number;
   domains: string[];
   refresh: boolean;
+}
+
+// ── Org-wide Collection Curation (Phase 4) ───────────────────────
+
+/** A signature move — one recognizable flourish per repo */
+export type SignatureMove =
+  | 'stamp_seal'
+  | 'checksum_box'
+  | 'margin_notes'
+  | 'catalog_number'
+  | 'card_back_pattern'
+  | 'fold_marks';
+
+/** Season — a curation lens, not a template */
+export interface Season {
+  name: string;
+  started_at: string;
+  tier_weights: Partial<Record<Tier, number>>;
+  format_bias: string[];
+  constraint_decks_enabled: string[];
+  ban_list: string[];
+  signature_moves: SignatureMove[];
+  notes: string;
+}
+
+/** One line in the org ledger — one decision, one repo */
+export interface LedgerEntry {
+  repo_name: string;
+  tier: Tier;
+  format_family: string;
+  constraints: string[];
+  hooks_used: string[];
+  season: string;
+  signature_move: SignatureMove | null;
+  timestamp: string;
+}
+
+/** Computed org status — coverage, diversity, gaps */
+export interface OrgStatus {
+  total_decisions: number;
+  tier_distribution: Record<string, number>;
+  format_distribution: Record<string, number>;
+  constraint_frequency: Record<string, number>;
+  signature_move_usage: Record<string, number>;
+  current_season: string | null;
+  recent_bans: string[];
+  gaps: string[];
+  diversity_score: number;
+}
+
+/** Curation brief — compact input for the Curator prompt */
+export interface CurationBrief {
+  season: Season | null;
+  org_bans: Array<{ item: string; reason: string }>;
+  org_gaps: string[];
+  assigned_move: SignatureMove | null;
+  formatted: string;
 }

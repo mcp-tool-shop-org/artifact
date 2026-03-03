@@ -38,7 +38,7 @@ function formatAtoms(atoms: TruthAtom[]): string {
   return sections.join('\n\n');
 }
 
-function buildPrompt(ctx: RepoContext, history: HistoryStore, memoryBrief?: string, webBrief?: string): string {
+function buildPrompt(ctx: RepoContext, history: HistoryStore, memoryBrief?: string, webBrief?: string, curationBrief?: string): string {
   const usedTiers = recentTiers(history);
   const usedFormats = recentFormats(history);
   const usedConstraints = recentConstraints(history);
@@ -59,7 +59,7 @@ ${atomsSection}
 
 === RECENTLY USED ATOM IDs (avoid repeating) ===
 ${usedAtoms.length > 0 ? usedAtoms.join(', ') : 'none'}
-${memorySection ? `\n${memorySection}\n` : ''}${webBrief ? `\n${webBrief}\n\n` : ''}AVAILABLE TIERS: ${tiersAvail}
+${memorySection ? `\n${memorySection}\n` : ''}${webBrief ? `\n${webBrief}\n\n` : ''}${curationBrief ? `\n${curationBrief}\n\n` : ''}AVAILABLE TIERS: ${tiersAvail}
 RECENTLY USED FORMATS (avoid): ${usedFormats.length > 0 ? usedFormats.join(', ') : 'none'}
 RECENTLY USED CONSTRAINTS (vary): ${usedConstraints.length > 0 ? usedConstraints.join(', ') : 'none'}
 
@@ -234,8 +234,9 @@ export async function drive(
   history: HistoryStore,
   memoryBrief?: string,
   webBrief?: string,
+  curationBrief?: string,
 ): Promise<DecisionPacket | null> {
-  const prompt = buildPrompt(ctx, history, memoryBrief, webBrief);
+  const prompt = buildPrompt(ctx, history, memoryBrief, webBrief, curationBrief);
   const raw = await generate(conn, prompt);
   if (!raw) return null;
 

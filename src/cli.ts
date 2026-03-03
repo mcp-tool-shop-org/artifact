@@ -9,6 +9,8 @@
  *   memory forget <repo-name>   Forget a repo's memory
  *   memory prune <days>         Prune old entries
  *   memory stats                Memory statistics
+ *   season list|set|status|end  Manage curation seasons
+ *   org status|ledger|bans      Org-wide curation info
  */
 
 import { resolve, basename } from 'node:path';
@@ -20,6 +22,7 @@ import { extractTruthBundle } from './truth.js';
 import * as history from './history.js';
 import * as mem from './memory.js';
 import { buildQueryMenu, collectFindings, synthesizeBrief, saveBrief, formatWebBrief } from './web.js';
+import * as org from './org.js';
 import type { RepoContext, RepoType, DecisionPacket, WebOptions } from './types.js';
 
 function usage(): never {
@@ -31,6 +34,13 @@ Commands:
   memory forget <repo-name>   Forget all memory for a repo.
   memory prune <days>         Prune entries older than N days.
   memory stats                Show memory statistics.
+  season list                 List available seasons.
+  season set <name>           Activate a season.
+  season status               Show active season rules.
+  season end                  End the current season.
+  org status                  Coverage, diversity, gaps.
+  org ledger [n]              Last N decisions (default: 10).
+  org bans                    Current auto-bans with reasons.
 
 Drive options:
   --no-curator         Skip Ollama, use deterministic fallback only.
@@ -40,6 +50,7 @@ Drive options:
   --web-cache-ttl <h>  Cache TTL in hours (default: 72).
   --web-domains <csv>  Comma-separated domain allowlist.
   --web-refresh        Bypass cache, re-fetch all queries.
+  --curate-org         Enable org-wide curation (season + bans + gaps).
   --help               Show this help.`);
   return process.exit(1) as never;
 }
@@ -65,6 +76,7 @@ function flagValueIndices(args: string[], flags: string[]): Set<number> {
 async function cmdDrive(args: string[]): Promise<void> {
   const noCurator = args.includes('--no-curator');
   const curatorSpeak = args.includes('--curator-speak');
+  const curateOrg = args.includes('--curate-org');
   const repoType: RepoType = (flagValue(args, '--type') as RepoType) ?? 'unknown';
 
   // Web options
@@ -110,6 +122,16 @@ async function cmdDrive(args: string[]): Promise<void> {
       console.error('Web: --web requires Ollama for synthesis. Skipped (use without --no-curator).');
     }
     packet = driveFallback(ctx, store);
+    // Attach org curation metadata even in fallback mode
+    if (curateOrg) {
+      const curation = await org.buildCurationBrief(repoName);
+      const seasonLabel = curation.season?.name ?? 'none';
+      console.error(`Org: season="${seasonLabel}", ${curation.org_bans.length} bans, ${curation.org_gaps.length} gaps, move=${curation.assigned_move ?? 'none'}`);
+      packet.season = curation.season?.name ?? 'none';
+      packet.org_bans_applied = curation.org_bans.map(b => b.item);
+      packet.org_gap_bias = curation.org_gaps;
+      packet.signature_move = curation.assigned_move ?? undefined;
+    }
   } else {
     const conn = await connect();
     if (conn) {
@@ -142,9 +164,26 @@ async function cmdDrive(args: string[]): Promise<void> {
         webBriefText = formatWebBrief(webBrief);
       }
 
-      const result = await curatorDrive(conn, ctx, store, brief.formatted || undefined, webBriefText);
+      // Build curation brief (if --curate-org enabled)
+      let curationBriefText: string | undefined;
+      if (curateOrg) {
+        const curation = await org.buildCurationBrief(repoName);
+        const seasonLabel = curation.season?.name ?? 'none';
+        console.error(`Org: season="${seasonLabel}", ${curation.org_bans.length} bans, ${curation.org_gaps.length} gaps, move=${curation.assigned_move ?? 'none'}`);
+        curationBriefText = curation.formatted;
+      }
+
+      const result = await curatorDrive(conn, ctx, store, brief.formatted || undefined, webBriefText, curationBriefText);
       if (result) {
         packet = result;
+        // Attach org curation metadata to packet
+        if (curateOrg) {
+          const curation = await org.buildCurationBrief(repoName);
+          packet.season = curation.season?.name ?? 'none';
+          packet.org_bans_applied = curation.org_bans.map(b => b.item);
+          packet.org_gap_bias = curation.org_gaps;
+          packet.signature_move = curation.assigned_move ?? undefined;
+        }
       } else {
         console.error('Curator: Ollama responded but output was invalid. Falling back.');
         packet = driveFallback(ctx, store);
@@ -185,6 +224,12 @@ async function cmdDrive(args: string[]): Promise<void> {
   // Write to persistent memory (org + repo)
   await mem.writePacket(packet, repoPath, ollamaHost);
   console.error('Memory: decision saved to repo + org stores');
+
+  // Record to org ledger (if --curate-org)
+  if (curateOrg) {
+    await org.recordDecision(packet);
+    console.error('Org: ledger entry recorded, status recomputed');
+  }
 
   // Output the packet to stdout
   console.log(JSON.stringify(packet, null, 2));
@@ -237,6 +282,133 @@ async function cmdMemoryStats(): Promise<void> {
   console.log(`Newest:       ${s.newest ?? 'n/a'}`);
 }
 
+// ── Season commands ──────────────────────────────────────────────
+
+async function cmdSeasonList(): Promise<void> {
+  const seasons = org.listSeasons();
+  const active = await org.loadSeason();
+  for (const s of seasons) {
+    const marker = active?.name === s.name ? ' ← ACTIVE' : '';
+    console.log(`  ${s.key.padEnd(16)} ${s.name}${marker}`);
+    console.log(`${''.padEnd(18)} ${s.notes}`);
+  }
+}
+
+async function cmdSeasonSet(args: string[]): Promise<void> {
+  const key = args[0];
+  if (!key) {
+    console.error('Usage: artifact season set <name>');
+    console.error(`Available: ${org.SEASON_NAMES.join(', ')}`);
+    process.exit(1);
+  }
+  const season = await org.setSeason(key);
+  if (!season) {
+    console.error(`Unknown season: "${key}"`);
+    console.error(`Available: ${org.SEASON_NAMES.join(', ')}`);
+    process.exit(1);
+  }
+  console.log(`Season activated: ${season.name}`);
+  console.log(`Notes: ${season.notes}`);
+}
+
+async function cmdSeasonStatus(): Promise<void> {
+  const season = await org.loadSeason();
+  if (!season) {
+    console.log('No active season. Use "artifact season set <name>" to activate one.');
+    return;
+  }
+  console.log(`Season: ${season.name}`);
+  console.log(`Started: ${season.started_at.slice(0, 19)}`);
+  console.log(`Notes: ${season.notes}`);
+  const weights = Object.entries(season.tier_weights).map(([t, w]) => `${t}:${w}x`).join(', ');
+  if (weights) console.log(`Tier weights: ${weights}`);
+  if (season.format_bias.length > 0) console.log(`Format bias: ${season.format_bias.join(', ')}`);
+  if (season.constraint_decks_enabled.length > 0) console.log(`Constraint decks: ${season.constraint_decks_enabled.join(', ')}`);
+  if (season.signature_moves.length > 0) console.log(`Signature moves: ${season.signature_moves.join(', ')}`);
+}
+
+async function cmdSeasonEnd(): Promise<void> {
+  const name = await org.endSeason();
+  if (!name) {
+    console.log('No active season to end.');
+    return;
+  }
+  console.log(`Season ended: ${name}`);
+}
+
+// ── Org commands ─────────────────────────────────────────────────
+
+async function cmdOrgStatus(): Promise<void> {
+  const status = await org.computeStatus();
+  console.log(`Total decisions: ${status.total_decisions}`);
+  console.log(`Diversity score: ${status.diversity_score}/100`);
+
+  if (status.current_season) {
+    console.log(`Active season: ${status.current_season}`);
+  }
+
+  if (Object.keys(status.tier_distribution).length > 0) {
+    console.log(`\nTier distribution:`);
+    for (const [tier, count] of Object.entries(status.tier_distribution)) {
+      const pct = Math.round((count / status.total_decisions) * 100);
+      console.log(`  ${tier.padEnd(12)} ${count} (${pct}%)`);
+    }
+  }
+
+  if (Object.keys(status.format_distribution).length > 0) {
+    console.log(`\nFormat distribution:`);
+    const sorted = Object.entries(status.format_distribution).sort((a, b) => b[1] - a[1]);
+    for (const [fmt, count] of sorted) {
+      console.log(`  ${fmt.padEnd(24)} ${count}`);
+    }
+  }
+
+  if (status.gaps.length > 0) {
+    console.log(`\nGaps:`);
+    for (const g of status.gaps) {
+      console.log(`  - ${g}`);
+    }
+  }
+
+  if (status.recent_bans.length > 0) {
+    console.log(`\nActive bans:`);
+    for (const b of status.recent_bans) {
+      console.log(`  - ${b}`);
+    }
+  }
+}
+
+async function cmdOrgLedger(args: string[]): Promise<void> {
+  const n = parseInt(args[0] ?? '10', 10) || 10;
+  const entries = await org.ledgerTail(n);
+
+  if (entries.length === 0) {
+    console.log('No ledger entries yet. Run "artifact drive <repo> --curate-org" to start.');
+    return;
+  }
+
+  for (const e of entries) {
+    const move = e.signature_move ? ` [${e.signature_move}]` : '';
+    const season = e.season !== 'none' ? ` (${e.season})` : '';
+    console.log(`${e.timestamp.slice(0, 19)} ${e.repo_name.padEnd(20)} ${e.tier.padEnd(10)} ${e.format_family}${move}${season}`);
+  }
+  console.log(`\n${entries.length} entries shown.`);
+}
+
+async function cmdOrgBans(): Promise<void> {
+  const status = await org.computeStatus();
+
+  if (status.recent_bans.length === 0) {
+    console.log('No active bans. (Need 3+ ledger entries for ban computation.)');
+    return;
+  }
+
+  console.log('Active org-wide bans:');
+  for (const b of status.recent_bans) {
+    console.log(`  - ${b}`);
+  }
+}
+
 // ── Main router ─────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -259,6 +431,32 @@ async function main(): Promise<void> {
       await cmdMemoryStats();
     } else {
       console.error(`Unknown memory command: ${subCmd}`);
+      usage();
+    }
+  } else if (cmd === 'season') {
+    const subCmd = args[1];
+    if (subCmd === 'list') {
+      await cmdSeasonList();
+    } else if (subCmd === 'set') {
+      await cmdSeasonSet(args.slice(2));
+    } else if (subCmd === 'status') {
+      await cmdSeasonStatus();
+    } else if (subCmd === 'end') {
+      await cmdSeasonEnd();
+    } else {
+      console.error(`Unknown season command: ${subCmd}`);
+      usage();
+    }
+  } else if (cmd === 'org') {
+    const subCmd = args[1];
+    if (subCmd === 'status') {
+      await cmdOrgStatus();
+    } else if (subCmd === 'ledger') {
+      await cmdOrgLedger(args.slice(2));
+    } else if (subCmd === 'bans') {
+      await cmdOrgBans();
+    } else {
+      console.error(`Unknown org command: ${subCmd}`);
       usage();
     }
   } else {
