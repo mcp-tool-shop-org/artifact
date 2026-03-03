@@ -40,6 +40,7 @@ import type { CatalogFormat } from './catalog.js';
 import { buildpack } from './buildpack.js';
 import { verifyArtifact, formatVerifyResult } from './verify.js';
 import { loadBuiltStore, addArtifactPaths, getBuiltRecord, getToolVersion, listBuiltRecords, formatBuiltRecord, formatBuiltList } from './built.js';
+import { crawlRepos } from './crawl.js';
 import { inferProfile, formatProfileForPrompt, formatProfileForDisplay } from './infer.js';
 import { getPersona, getPersonaByName, loadConfig, saveConfig, formatWhoami, formatPersonaCard, formatAbout, PERSONA_NAMES } from './persona.js';
 import { LocalRepoSource, RemoteRepoSource, resolveOutputDir, resolveRepoName } from './source.js';
@@ -89,6 +90,7 @@ Commands:
   org status                  Coverage, diversity, gaps.
   org ledger [n]              Last N decisions (default: 10).
   org bans                    Current auto-bans with reasons.
+  crawl [options]             Batch-curate multiple repos.
   built add <repo> <path...>  Attach artifact file paths to tracking.
   built ls [repo-name]        List built status (all or one repo).
   built status <repo-name>    Detailed tracking for one repo.
@@ -125,6 +127,16 @@ Verify options:
 Ritual options:
   Runs drive --curate-org --web --blueprint --review, then updates catalog.
   Accepts all drive options plus --format for catalog output.
+
+Crawl options:
+  --org <name>           Crawl all non-fork, non-archived repos in a GitHub org.
+  --from <file>          Crawl repos listed in a text file (one owner/repo per line).
+  --dry-run              List repos that would be crawled, then exit.
+  --skip-curated         Skip repos that already have a decision packet.
+  --no-blueprint         Skip blueprint generation (default: on).
+  --review               Also generate review cards.
+  --web                  Enable web recommendations.
+  --format <md|html>     Catalog format (default: md).
 
 Remote options (for drive, infer, ritual, blueprint, review, buildpack, verify, built):
   --remote <owner/repo>  Analyze a GitHub repo without a local clone.
@@ -1053,6 +1065,43 @@ async function cmdBuiltStatus(args: string[]): Promise<void> {
   console.log(formatBuiltRecord(record));
 }
 
+// ── Crawl command ──────────────────────────────────────────────
+
+async function cmdCrawl(args: string[]): Promise<void> {
+  const orgName = flagValue(args, '--org');
+  const fromFile = flagValue(args, '--from');
+  const dryRun = args.includes('--dry-run');
+  const skipCurated = args.includes('--skip-curated');
+  const web = args.includes('--web');
+  const emitBlueprint = !args.includes('--no-blueprint');
+  const emitReview = args.includes('--review');
+  const formatRaw = flagValue(args, '--format');
+  const token = process.env.GITHUB_TOKEN;
+
+  if (!orgName && !fromFile) {
+    console.error('Usage: artifact crawl --org <name> [options]');
+    console.error('       artifact crawl --from <file> [options]');
+    console.error('\nSpecify --org for a GitHub org or --from for a repo list file.');
+    process.exit(1);
+  }
+
+  const result = await crawlRepos({
+    org: orgName,
+    fromFile,
+    dryRun,
+    skipCurated,
+    noCurator: true,
+    web,
+    emitBlueprint,
+    emitReview,
+    curateOrg: true,
+    format: formatRaw === 'html' ? 'html' : 'md',
+    token,
+  });
+
+  if (result.failed > 0) process.exit(1);
+}
+
 // ── Main router ─────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -1089,6 +1138,8 @@ async function main(): Promise<void> {
     await cmdReview(args.slice(1));
   } else if (cmd === 'catalog') {
     await cmdCatalog(args.slice(1));
+  } else if (cmd === 'crawl') {
+    await cmdCrawl(args.slice(1));
   } else if (cmd === 'memory') {
     const subCmd = args[1];
     if (subCmd === 'show') {
