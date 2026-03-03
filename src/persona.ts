@@ -176,3 +176,19 @@ export function formatPersonaCard(persona: PersonaDef): string {
   }
   return lines.join('\n');
 }
+
+/** Format the about screen — version + persona + core rules. */
+export function formatAbout(version: string, persona: PersonaDef): string {
+  const lines: string[] = [];
+  lines.push(`artifact v${version} — ${persona.name}, ${persona.title}`);
+  lines.push('');
+  lines.push('Core rules:');
+  lines.push('  - Every claim traces to a TruthAtom (file:line citations)');
+  lines.push('  - No telemetry, no external data collection');
+  lines.push('  - Web findings inform tier/format ranking only — never repo facts');
+  lines.push('  - Ollama optional — deterministic fallback always available');
+  lines.push('  - Inference profile is auditable (artifact infer --json)');
+  lines.push('');
+  lines.push('https://github.com/mcp-tool-shop-org/artifact');
+  return lines.join('\n');
+}

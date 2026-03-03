@@ -4,6 +4,9 @@
  * artifact — repo signature artifact decision system
  *
  * Commands:
+ *   doctor                      Environment health check
+ *   init                        First-run onboarding
+ *   about                       Version + persona + core rules
  *   drive [repo-path]           Run the Curator freshness driver
  *   infer [repo-path]           Compute inference profile (no Ollama)
  *   blueprint [repo-path]       Generate Blueprint Pack from latest decision
@@ -19,8 +22,8 @@
  *   org status|ledger|bans      Org-wide curation info
  */
 
-import { resolve, basename } from 'node:path';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { resolve, basename, dirname } from 'node:path';
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { connect } from './ollama.js';
 import { drive as curatorDrive } from './curator.js';
 import { driveFallback } from './fallback.js';
@@ -36,13 +39,30 @@ import type { CatalogFormat } from './catalog.js';
 import { buildpack } from './buildpack.js';
 import { verifyArtifact, formatVerifyResult } from './verify.js';
 import { inferProfile, formatProfileForPrompt, formatProfileForDisplay } from './infer.js';
-import { getPersona, loadConfig, saveConfig, formatWhoami, formatPersonaCard, PERSONA_NAMES } from './persona.js';
+import { getPersona, getPersonaByName, loadConfig, saveConfig, formatWhoami, formatPersonaCard, formatAbout, PERSONA_NAMES } from './persona.js';
 import type { RepoContext, RepoType, DecisionPacket, WebOptions, InferenceProfile } from './types.js';
+import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
+import { homedir } from 'node:os';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+async function getVersion(): Promise<string> {
+  try {
+    const raw = await readFile(resolve(__dirname, '..', 'package.json'), 'utf-8');
+    return JSON.parse(raw).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
 
 function usage(): never {
   console.error(`Usage: artifact <command> [options]
 
 Commands:
+  doctor                      Environment health check.
+  init                        First-run onboarding (creates config).
+  about                       Version, persona, and core rules.
   drive [repo-path]           Run the Curator freshness driver.
   infer [repo-path]           Compute inference profile (no Ollama).
   ritual [repo-path]          Full ritual: drive + blueprint + review + catalog.
@@ -96,7 +116,11 @@ Verify options:
 
 Ritual options:
   Runs drive --curate-org --web --blueprint --review, then updates catalog.
-  Accepts all drive options plus --format for catalog output.`);
+  Accepts all drive options plus --format for catalog output.
+
+Global:
+  --version                  Print version and exit.
+  --help                     Show this help.`);
   return process.exit(1) as never;
 }
 
@@ -806,6 +830,123 @@ async function cmdConfigSet(args: string[]): Promise<void> {
   console.log(`Set ${key} = ${value.toLowerCase()}`);
 }
 
+// ── Doctor command ──────────────────────────────────────────────
+
+async function cmdDoctor(): Promise<void> {
+  const checks: Array<{ label: string; status: 'pass' | 'warn' | 'info' | 'FAIL'; detail: string }> = [];
+
+  // 1. Node version
+  const nodeVersion = process.version;
+  const major = parseInt(nodeVersion.slice(1), 10);
+  checks.push({
+    label: 'Node',
+    status: major >= 20 ? 'pass' : 'FAIL',
+    detail: `${nodeVersion} (>= 20 required)`,
+  });
+
+  // 2. ~/.artifact/ writable
+  const configDir = resolve(homedir(), '.artifact');
+  try {
+    await mkdir(configDir, { recursive: true });
+    const testFile = resolve(configDir, '.doctor-test');
+    await writeFile(testFile, 'ok', 'utf-8');
+    await unlink(testFile);
+    checks.push({ label: '~/.artifact/', status: 'pass', detail: 'writable' });
+  } catch {
+    checks.push({ label: '~/.artifact/', status: 'FAIL', detail: 'not writable' });
+  }
+
+  // 3. Config valid
+  try {
+    const config = await loadConfig();
+    checks.push({ label: 'Config', status: 'pass', detail: `persona=${config.agent_name}` });
+  } catch {
+    checks.push({ label: 'Config', status: 'warn', detail: 'could not parse config.json' });
+  }
+
+  // 4. Ollama
+  try {
+    const conn = await connect();
+    if (conn) {
+      checks.push({ label: 'Ollama', status: 'pass', detail: `model=${conn.model}` });
+    } else {
+      checks.push({ label: 'Ollama', status: 'warn', detail: 'not running (fallback driver will be used)' });
+    }
+  } catch {
+    checks.push({ label: 'Ollama', status: 'warn', detail: 'not running (fallback driver will be used)' });
+  }
+
+  // 5. Git
+  try {
+    const gitOut = execSync('git --version', { encoding: 'utf-8' }).trim();
+    const ver = gitOut.replace('git version ', '');
+    checks.push({ label: 'Git', status: 'pass', detail: ver });
+  } catch {
+    checks.push({ label: 'Git', status: 'warn', detail: 'not found' });
+  }
+
+  // 6. Last run
+  try {
+    await readFile(resolve('.', '.artifact', 'decision_packet.json'), 'utf-8');
+    checks.push({ label: 'Last run', status: 'info', detail: 'decision packet found in current directory' });
+  } catch {
+    checks.push({ label: 'Last run', status: 'info', detail: 'no decision packet in current directory' });
+  }
+
+  // Print
+  console.log('artifact doctor');
+  for (const c of checks) {
+    console.log(`  [${c.status}] ${c.label}: ${c.detail}`);
+  }
+}
+
+// ── Init command ────────────────────────────────────────────────
+
+async function cmdInit(): Promise<void> {
+  const configDir = resolve(homedir(), '.artifact');
+  const configFile = resolve(configDir, 'config.json');
+
+  // Check if config already exists
+  let existing = false;
+  try {
+    await readFile(configFile, 'utf-8');
+    existing = true;
+  } catch {
+    // doesn't exist yet
+  }
+
+  if (existing) {
+    const config = await loadConfig();
+    const persona = getPersonaByName(config.agent_name);
+    console.log(formatWhoami(persona));
+    console.log('');
+    console.log(`Config already exists at ${configFile}`);
+    console.log(`  persona: ${config.agent_name}`);
+    console.log('');
+    console.log('Run "artifact whoami --verbose" for full persona details.');
+    return;
+  }
+
+  // Create default config
+  await saveConfig({ agent_name: 'glyph' });
+  const persona = getPersonaByName('glyph');
+  console.log(formatWhoami(persona));
+  console.log('');
+  console.log(`Config created at ${configFile}`);
+  console.log('  persona: glyph');
+  console.log('');
+  console.log('Run "artifact drive <repo>" to generate your first decision.');
+  console.log('Run "artifact whoami --verbose" for full persona details.');
+}
+
+// ── About command ──────────────────────────────────────────────
+
+async function cmdAbout(): Promise<void> {
+  const version = await getVersion();
+  const persona = await getPersona();
+  console.log(formatAbout(version, persona));
+}
+
 // ── Main router ─────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -814,7 +955,19 @@ async function main(): Promise<void> {
 
   if (!cmd || cmd === '--help') usage();
 
-  if (cmd === 'drive') {
+  if (cmd === '--version') {
+    const version = await getVersion();
+    console.log(version);
+    return;
+  }
+
+  if (cmd === 'doctor') {
+    await cmdDoctor();
+  } else if (cmd === 'init') {
+    await cmdInit();
+  } else if (cmd === 'about') {
+    await cmdAbout();
+  } else if (cmd === 'drive') {
     await cmdDrive(args.slice(1));
   } else if (cmd === 'infer') {
     await cmdInfer(args.slice(1));
