@@ -1,5 +1,5 @@
 /**
- * Repo Source Abstraction (Phase 15)
+ * Repo Source Abstraction (Phase 15 + Phase 16 cache)
  *
  * Decouples truth extraction from the filesystem so Artifact can
  * analyze repos locally OR via the GitHub API without a local clone.
@@ -7,9 +7,15 @@
  * Two implementations:
  *   LocalRepoSource  — wraps node:fs (existing behavior)
  *   RemoteRepoSource — GitHub REST API via native fetch (no deps)
+ *
+ * Phase 16 adds a disk cache to RemoteRepoSource:
+ *   - Repo metadata + tree cached with ETag for conditional requests
+ *   - File content cached by git blob SHA (content-addressable, no TTL needed)
+ *   - Re-run on unchanged repo: 2 API calls (304s) instead of ~27
+ *   - --remote-refresh bypasses cache entirely
  */
 
-import { readFile as fsReadFile, readdir as fsReaddir, stat as fsStat } from 'node:fs/promises';
+import { readFile as fsReadFile, readdir as fsReaddir, stat as fsStat, writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { join, resolve, relative, extname, basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -126,6 +132,69 @@ export class LocalRepoSource implements RepoSource {
   }
 }
 
+// ── Semaphore (concurrency limiter) ──────────────────────────────
+
+class Semaphore {
+  private queue: Array<() => void> = [];
+  private active = 0;
+
+  constructor(private limit: number) {}
+
+  acquire(): Promise<void> {
+    if (this.active < this.limit) {
+      this.active++;
+      return Promise.resolve();
+    }
+    return new Promise<void>(resolve => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release(): void {
+    this.active--;
+    const next = this.queue.shift();
+    if (next) {
+      this.active++;
+      next();
+    }
+  }
+}
+
+// ── Disk cache types ────────────────────────────────────────────
+
+interface MetaCache {
+  default_branch: string;
+  etag: string | null;
+  retrieved_at: string;
+}
+
+interface TreeCacheEntry {
+  path: string;
+  size: number;
+  sha: string;
+}
+
+interface TreeCache {
+  entries: TreeCacheEntry[];
+  etag: string | null;
+  retrieved_at: string;
+}
+
+interface BlobCache {
+  sha: string;
+  content: string;
+  retrieved_at: string;
+}
+
+// ── RemoteRepoSource options ────────────────────────────────────
+
+export interface RemoteSourceOptions {
+  /** Bypass disk cache entirely (--remote-refresh) */
+  refresh?: boolean;
+  /** Cache TTL in hours (default: 24). Blob cache ignores TTL (SHA-keyed). */
+  cacheTtlHours?: number;
+}
+
 // ── RemoteRepoSource ─────────────────────────────────────────────
 
 interface TreeEntry {
@@ -142,15 +211,81 @@ export class RemoteRepoSource implements RepoSource {
   private readonly repo: string;
   private readonly ref: string | undefined;
   private readonly token: string | undefined;
+  private readonly opts: Required<RemoteSourceOptions>;
+  private readonly sem = new Semaphore(5);
 
-  constructor(owner: string, repo: string, ref?: string, token?: string) {
+  // Stats for cache logging
+  private apiCalls = 0;
+  private cacheHits = 0;
+
+  constructor(owner: string, repo: string, ref?: string, token?: string, opts?: RemoteSourceOptions) {
     this.owner = owner;
     this.repo = repo;
     this.ref = ref;
     this.token = token;
+    this.opts = {
+      refresh: opts?.refresh ?? false,
+      cacheTtlHours: opts?.cacheTtlHours ?? 24,
+    };
   }
 
-  private headers(): Record<string, string> {
+  // ── Cache I/O ──────────────────────────────────────────────────
+
+  private cacheDir(): string {
+    return join(homedir(), '.artifact', 'cache', 'remote', this.owner, this.repo);
+  }
+
+  private blobDir(): string {
+    return join(this.cacheDir(), 'blobs');
+  }
+
+  private async loadCacheJson<T>(filename: string): Promise<T | null> {
+    if (this.opts.refresh) return null;
+    try {
+      const raw = await fsReadFile(join(this.cacheDir(), filename), 'utf-8');
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  private async saveCacheJson(filename: string, data: unknown): Promise<void> {
+    try {
+      const dir = this.cacheDir();
+      await fsMkdir(dir, { recursive: true });
+      await fsWriteFile(join(dir, filename), JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    } catch { /* best-effort cache write */ }
+  }
+
+  private async loadBlobCache(sha: string): Promise<string | null> {
+    if (this.opts.refresh) return null;
+    try {
+      const raw = await fsReadFile(join(this.blobDir(), `${sha}.json`), 'utf-8');
+      const parsed = JSON.parse(raw) as BlobCache;
+      if (parsed.sha === sha && typeof parsed.content === 'string') return parsed.content;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async saveBlobCache(sha: string, content: string): Promise<void> {
+    try {
+      const dir = this.blobDir();
+      await fsMkdir(dir, { recursive: true });
+      const entry: BlobCache = { sha, content, retrieved_at: new Date().toISOString() };
+      await fsWriteFile(join(dir, `${sha}.json`), JSON.stringify(entry) + '\n', 'utf-8');
+    } catch { /* best-effort */ }
+  }
+
+  private isFresh(retrievedAt: string): boolean {
+    const age = Date.now() - new Date(retrievedAt).getTime();
+    return age < this.opts.cacheTtlHours * 3600_000;
+  }
+
+  // ── HTTP helpers ───────────────────────────────────────────────
+
+  private baseHeaders(): Record<string, string> {
     const h: Record<string, string> = {
       'Accept': 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
@@ -159,14 +294,33 @@ export class RemoteRepoSource implements RepoSource {
     return h;
   }
 
-  /** Resolve default branch if no ref was specified */
-  private async resolveRef(): Promise<string> {
-    if (this.ref) return this.ref;
-    if (this.defaultRef) return this.defaultRef;
+  /** Fetch with optional ETag conditional request */
+  private async conditionalFetch(url: string, etag?: string | null): Promise<{
+    status: number;
+    data: unknown;
+    etag: string | null;
+    notModified: boolean;
+    headers: Headers;
+  }> {
+    const headers = this.baseHeaders();
+    if (etag && !this.opts.refresh) {
+      headers['If-None-Match'] = etag;
+    }
 
-    const url = `https://api.github.com/repos/${this.owner}/${this.repo}`;
-    const res = await fetch(url, { headers: this.headers() });
+    this.apiCalls++;
+    const res = await fetch(url, { headers });
 
+    if (res.status === 304) {
+      return {
+        status: 304,
+        data: null,
+        etag: res.headers.get('etag'),
+        notModified: true,
+        headers: res.headers,
+      };
+    }
+
+    // Error handling
     if (res.status === 404) {
       throw new Error(
         `Repository "${this.owner}/${this.repo}" not found on GitHub.`
@@ -187,24 +341,91 @@ export class RemoteRepoSource implements RepoSource {
       throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
     }
 
-    const data = await res.json() as { default_branch: string };
+    return {
+      status: res.status,
+      data: await res.json(),
+      etag: res.headers.get('etag'),
+      notModified: false,
+      headers: res.headers,
+    };
+  }
+
+  // ── Core methods with disk cache ───────────────────────────────
+
+  /** Resolve default branch if no ref was specified */
+  private async resolveRef(): Promise<string> {
+    if (this.ref) return this.ref;
+    if (this.defaultRef) return this.defaultRef;
+
+    // Check disk cache
+    const cached = await this.loadCacheJson<MetaCache>('meta.json');
+    if (cached && this.isFresh(cached.retrieved_at)) {
+      this.defaultRef = cached.default_branch;
+      this.cacheHits++;
+      return this.defaultRef;
+    }
+
+    // Conditional fetch (or fresh fetch if no cache)
+    const url = `https://api.github.com/repos/${this.owner}/${this.repo}`;
+    const result = await this.conditionalFetch(url, cached?.etag);
+
+    if (result.notModified && cached) {
+      // 304 — update timestamp, keep cached data
+      cached.retrieved_at = new Date().toISOString();
+      if (result.etag) cached.etag = result.etag;
+      await this.saveCacheJson('meta.json', cached);
+      this.defaultRef = cached.default_branch;
+      return this.defaultRef;
+    }
+
+    // 200 — save new data
+    const data = result.data as { default_branch: string };
+    const entry: MetaCache = {
+      default_branch: data.default_branch,
+      etag: result.etag,
+      retrieved_at: new Date().toISOString(),
+    };
+    await this.saveCacheJson('meta.json', entry);
     this.defaultRef = data.default_branch;
     return this.defaultRef;
   }
 
-  /** Load the full recursive file tree (one API call, cached) */
+  /** Load the full recursive file tree (with disk cache + ETag) */
   private async loadTree(): Promise<Map<string, TreeEntry>> {
     if (this.treeCache) return this.treeCache;
 
     const ref = await this.resolveRef();
-    const url = `https://api.github.com/repos/${this.owner}/${this.repo}/git/trees/${ref}?recursive=1`;
-    const res = await fetch(url, { headers: this.headers() });
+    const cacheFile = `tree-${ref}.json`;
 
-    if (!res.ok) {
-      throw new Error(`GitHub tree API error: ${res.status} for ref "${ref}"`);
+    // Check disk cache
+    const cached = await this.loadCacheJson<TreeCache>(cacheFile);
+    if (cached && this.isFresh(cached.retrieved_at)) {
+      this.treeCache = new Map();
+      for (const item of cached.entries) {
+        this.treeCache.set(item.path, item);
+      }
+      this.cacheHits++;
+      return this.treeCache;
     }
 
-    const data = await res.json() as {
+    // Conditional fetch
+    const url = `https://api.github.com/repos/${this.owner}/${this.repo}/git/trees/${ref}?recursive=1`;
+    const result = await this.conditionalFetch(url, cached?.etag);
+
+    if (result.notModified && cached) {
+      // 304 — tree unchanged, update timestamp
+      cached.retrieved_at = new Date().toISOString();
+      if (result.etag) cached.etag = result.etag;
+      await this.saveCacheJson(cacheFile, cached);
+      this.treeCache = new Map();
+      for (const item of cached.entries) {
+        this.treeCache.set(item.path, item);
+      }
+      return this.treeCache;
+    }
+
+    // 200 — new tree
+    const data = result.data as {
       tree: Array<{ path: string; type: string; size?: number; sha: string }>;
       truncated: boolean;
     };
@@ -213,16 +434,28 @@ export class RemoteRepoSource implements RepoSource {
       console.error('Warning: GitHub tree was truncated (repo has very many files). Some source files may be missed.');
     }
 
+    const entries: TreeCacheEntry[] = [];
     this.treeCache = new Map();
     for (const item of data.tree) {
       if (item.type === 'blob') {
-        this.treeCache.set(item.path, {
+        const entry: TreeEntry = {
           path: item.path,
           size: item.size ?? 0,
           sha: item.sha,
-        });
+        };
+        this.treeCache.set(item.path, entry);
+        entries.push(entry);
       }
     }
+
+    // Save to disk cache
+    const treeEntry: TreeCache = {
+      entries,
+      etag: result.etag,
+      retrieved_at: new Date().toISOString(),
+    };
+    await this.saveCacheJson(cacheFile, treeEntry);
+
     return this.treeCache;
   }
 
@@ -245,29 +478,45 @@ export class RemoteRepoSource implements RepoSource {
       return null;
     }
 
-    // Fetch file content via Contents API
-    const ref = await this.resolveRef();
-    const url = `https://api.github.com/repos/${this.owner}/${this.repo}/contents/${normalized}?ref=${ref}`;
+    // Check blob disk cache (keyed by SHA — content-addressable, no TTL)
+    const blobContent = await this.loadBlobCache(entry.sha);
+    if (blobContent !== null) {
+      this.fileCache.set(normalized, blobContent);
+      this.cacheHits++;
+      return blobContent;
+    }
 
+    // Fetch file content via Contents API (with semaphore)
+    await this.sem.acquire();
     try {
-      const res = await fetch(url, { headers: this.headers() });
+      const ref = await this.resolveRef();
+      const url = `https://api.github.com/repos/${this.owner}/${this.repo}/contents/${normalized}?ref=${ref}`;
+
+      this.apiCalls++;
+      const res = await fetch(url, { headers: this.baseHeaders() });
       if (!res.ok) {
         this.fileCache.set(normalized, null);
         return null;
       }
 
       const data = await res.json() as { content?: string; encoding?: string };
-      if (data.encoding !== 'base64' || !data.content) {
+      if (data.encoding !== 'base64' || typeof data.content !== 'string') {
         this.fileCache.set(normalized, null);
         return null;
       }
 
       const content = Buffer.from(data.content, 'base64').toString('utf-8');
       this.fileCache.set(normalized, content);
+
+      // Save to blob cache (keyed by SHA — reusable across runs/refs)
+      await this.saveBlobCache(entry.sha, content);
+
       return content;
     } catch {
       this.fileCache.set(normalized, null);
       return null;
+    } finally {
+      this.sem.release();
     }
   }
 
@@ -315,6 +564,17 @@ export class RemoteRepoSource implements RepoSource {
       owner: this.owner,
       repo: this.repo,
     };
+  }
+
+  /** Log cache stats to stderr. Call after all operations complete. */
+  logCacheStats(): void {
+    if (this.apiCalls === 0 && this.cacheHits > 0) {
+      console.error(`Remote cache: all data from disk cache (0 API calls)`);
+    } else if (this.cacheHits > 0) {
+      console.error(`Remote cache: ${this.cacheHits} cache hits, ${this.apiCalls} API calls`);
+    } else if (this.apiCalls > 0) {
+      console.error(`Remote: ${this.apiCalls} API calls (cold cache)`);
+    }
   }
 }
 

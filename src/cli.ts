@@ -129,6 +129,7 @@ Ritual options:
 Remote options (for drive, infer, ritual, blueprint, review, buildpack, verify, built):
   --remote <owner/repo>  Analyze a GitHub repo without a local clone.
   --ref <branch|tag|sha> Git ref for remote repos (default: default branch).
+  --remote-refresh       Bypass remote cache, re-fetch all API data.
 
 Environment:
   GITHUB_TOKEN           GitHub PAT for higher rate limits (5000/hr vs 60/hr).
@@ -148,6 +149,7 @@ async function cmdInfer(args: string[]): Promise<void> {
 
   // Extract truth atoms
   const truthBundle = await extractTruthBundle(source);
+  if (source instanceof RemoteRepoSource) source.logCacheStats();
   console.error(`Truth: ${truthBundle.atoms.length} atoms from ${truthBundle.stats.scanned_files} files`);
 
   const profile = inferProfile(repoName, repoType, truthBundle);
@@ -211,7 +213,8 @@ function buildSource(args: string[]): SourceContext {
     if (!token) {
       console.error('Warning: GITHUB_TOKEN not set. Rate limit: 60 req/hr. Private repos will fail.');
     }
-    const source = new RemoteRepoSource(owner, repo, ref, token);
+    const refresh = args.includes('--remote-refresh');
+    const source = new RemoteRepoSource(owner, repo, ref, token, { refresh });
     const outputDir = resolveOutputDir(source);
     const repoName = resolveRepoName(source);
     return { source, outputDir, repoPath: outputDir, repoName };
@@ -257,6 +260,7 @@ async function cmdDrive(args: string[]): Promise<void> {
 
   // Extract truth atoms
   const truthBundle = await extractTruthBundle(source);
+  if (source instanceof RemoteRepoSource) source.logCacheStats();
   const typeStats = Object.entries(truthBundle.stats.atoms_by_type).map(([t, n]) => `${t}:${n}`).join(', ');
   console.error(`Truth: ${truthBundle.atoms.length} atoms from ${truthBundle.stats.scanned_files} files (${typeStats})`);
 
