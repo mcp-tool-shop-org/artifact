@@ -1,6 +1,6 @@
 {
   "name": "@mcptoolshop/artifact",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Repo signature artifact decision system — checklist tree + Ollama-powered Curator freshness driver",
   "type": "module",
   "bin": {
@@ -30,6 +30,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "devDependencies": {

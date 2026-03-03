@@ -1,3 +1,7 @@
 node_modules/
 dist/
 .artifact/
+site/.astro/
+site/dist/
+site/node_modules/
+.polyglot-cache.json

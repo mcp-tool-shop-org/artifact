@@ -1,16 +1,21 @@
 <p align="center">
-  <strong>artifact</strong>
+  <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.ja.md">日本語</a> | <a href="README.pt-BR.md">Português (BR)</a> | <a href="README.zh.md">中文</a>
 </p>
 
 <p align="center">
-  Repo signature artifact decision system — checklist tree + Ollama-powered Curator freshness driver.
+  <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/brand/main/logos/artifact/readme.png" width="400" alt="Artifact">
 </p>
 
-## What it does
+<p align="center">
+  <a href="https://github.com/mcp-tool-shop-org/artifact/actions"><img src="https://img.shields.io/github/actions/workflow/status/mcp-tool-shop-org/artifact/ci.yml?label=CI" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/@mcptoolshop/artifact"><img src="https://img.shields.io/npm/v/@mcptoolshop/artifact" alt="npm version"></a>
+  <a href="https://github.com/mcp-tool-shop-org/artifact/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
+  <a href="https://mcp-tool-shop-org.github.io/artifact/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
+</p>
 
-`artifact` runs a freshness driver against any repo and outputs a structured decision packet — a JSON file that tells you which artifact tier, format family, constraints, and hooks to use for that repo's signature artifact.
+Repo signature artifact decision system. Runs a freshness driver against any repo and outputs a structured decision packet — tier, format, constraints, hooks, truth atoms with `file:line` citations.
 
-The Curator (powered by a local Ollama model) silently drives the decision. If Ollama isn't available, a deterministic fallback produces valid output using seeded hashing and rotation.
+The Curator (local Ollama) drives the decision. If Ollama isn't available, a deterministic fallback produces valid output using inference profiles and seeded rotation.
 
 ## Install
 
@@ -21,28 +26,84 @@ npm install -g @mcptoolshop/artifact
 Or run directly:
 
 ```bash
-npx @mcptoolshop/artifact drive .
+npx @mcptoolshop/artifact doctor
 ```
 
-## Usage
+## Quick Start
 
 ```bash
-# Run on current repo
-artifact drive .
+# First-run setup
+artifact init
+artifact doctor
 
-# Run on a specific repo path
+# Run on a repo
 artifact drive /path/to/repo
 
-# Skip Ollama, use deterministic fallback
-artifact drive . --no-curator
-
-# Specify repo type for better tier selection
-artifact drive . --type R1_tooling_cli
+# Full ritual: drive + blueprint + review + catalog
+artifact ritual /path/to/repo
 ```
 
-### Output
+## Commands
 
-Writes `.artifact/decision_packet.json` and prints it to stdout:
+### Core
+
+| Command | What it does |
+|---------|-------------|
+| `drive [repo-path]` | Run the Curator freshness driver |
+| `infer [repo-path]` | Compute inference profile (no Ollama needed) |
+| `ritual [repo-path]` | Full ritual: drive + blueprint + review + catalog |
+| `blueprint [repo-path]` | Generate Blueprint Pack from latest decision |
+| `buildpack [repo-path]` | Emit builder prompt packet for chat LLMs |
+| `verify [repo-path] --artifact <path>` | Lint artifact against blueprint + truth bundle |
+| `review [repo-path]` | Print a 4-block editorial review card |
+| `catalog` | Generate season catalog |
+
+### Setup & Diagnostics
+
+| Command | What it does |
+|---------|-------------|
+| `doctor` | Environment health check (Node, Ollama, git, config) |
+| `init` | First-run onboarding — creates config |
+| `about` | Version, active persona, and core rules |
+| `whoami` | Print active persona name + motto |
+| `--version` | Print version and exit |
+
+### Memory & History
+
+| Command | What it does |
+|---------|-------------|
+| `memory show [--org]` | Show repo or org-level memory |
+| `memory forget <name>` | Forget a repo's memory |
+| `memory prune <days>` | Prune entries older than N days |
+| `memory stats` | Memory statistics |
+
+### Org-wide Curation
+
+| Command | What it does |
+|---------|-------------|
+| `season list\|set\|status\|end` | Manage curation seasons |
+| `org status` | Coverage, diversity score, gaps |
+| `org ledger [n]` | Last N decisions |
+| `org bans` | Current auto-bans with reasons |
+| `config get [key]` | Read config values |
+| `config set <key> <value>` | Set config (e.g., `agent_name`) |
+
+## Drive Options
+
+```
+--no-curator         Skip Ollama, use deterministic fallback
+--curator-speak      Print Curator callouts (veto/twist/pick/risk)
+--explain            Print inference profile (why this tier)
+--blueprint          Also generate Blueprint Pack
+--review             Also print review card
+--type <type>        Repo type (R1_tooling_cli, etc.)
+--web                Enable web recommendations
+--curate-org         Enable org-wide curation (season + bans + gaps)
+```
+
+## Output
+
+Writes `.artifact/decision_packet.json` to the target repo:
 
 ```json
 {
@@ -51,52 +112,44 @@ Writes `.artifact/decision_packet.json` and prints it to stdout:
   "format_candidates": ["F2_card_deck", "F9_museum_placard"],
   "constraints": ["monospace-only", "uses-failure-mode"],
   "must_include": ["one real invariant", "one failure mode", "one CLI flag"],
-  "ban_list": ["F1_board_game"],
   "freshness_payload": {
     "weird_detail": "uses \\\\?\\ prefix to bypass Win32 parsing",
     "recent_change": "v1.0.3 added TOCTOU identity checks",
     "sharp_edge": "HMAC dot-separator must be in outer base64 layer"
-  },
-  "driver_meta": {
-    "host": "http://127.0.0.1:11434",
-    "model": "qwen2.5:14b",
-    "mode": "ollama",
-    "timestamp": "2026-03-03T12:00:00.000Z"
   }
 }
 ```
 
-### History & Rotation
+## Personas
 
-Each run appends to `.artifact/history.json`. The Curator reads history to avoid repeating tiers, format families, and constraints across runs.
+Three built-in curator personas. Default: **Glyph**.
 
-### Environment Variables
+| Persona | Role | Motto |
+|---------|------|-------|
+| Glyph | design gremlin | No vibes without receipts. |
+| Mina | museum curator | Make it specific. Make it collectible. |
+| Vera | verification oracle | Truth, but make it pretty. |
+
+```bash
+artifact whoami
+artifact config set agent_name vera
+```
+
+## Threat Model
+
+- **Ollama is local-only.** No data leaves your machine. Connects to `localhost` only.
+- **No telemetry.** No network calls except to local Ollama.
+- **No secrets.** Does not read, store, or transmit credentials.
+- **History is local.** `.artifact/` lives in the repo, gitignored by convention.
+- **Fallback is deterministic.** If Ollama is down, output is seeded from repo signals — reproducible, not random.
+- **File scope:** reads repo source files, writes only to `.artifact/` and `~/.artifact/`.
+
+## Environment Variables
 
 | Variable | Purpose |
 |----------|---------|
 | `OLLAMA_HOST` | Override Ollama endpoint (default: auto-detect) |
 | `ARTIFACT_OLLAMA_MODEL` | Force a specific Ollama model |
-
-### Repo Types
-
-| Code | Type |
-|------|------|
-| `R1_tooling_cli` | Tooling/CLI |
-| `R2_library_sdk` | Library/SDK |
-| `R3_service_server` | Service/Server |
-| `R4_template_scaffold` | Template/Scaffold |
-| `R5_spec_protocol` | Spec/Protocol |
-| `R6_demo_showcase` | Demo/Showcase |
-| `R7_data_registry` | Data/Registry |
-| `R8_product_app` | Product/App |
-| `R9_brand_meta` | Brand/Meta |
-
-## Threat Model
-
-- **Ollama is local-only.** No data leaves your machine. The driver connects to `localhost` by default.
-- **No telemetry.** No network calls except to local Ollama.
-- **History is local.** `.artifact/history.json` lives in the repo and is gitignored by convention.
-- **Fallback is deterministic.** If Ollama is down, output is seeded from repo name + date — reproducible, not random.
 
 ## License
 
@@ -104,4 +157,4 @@ MIT
 
 ---
 
-Built by [MCP Tool Shop](https://mcp-tool-shop.github.io/)
+Built by <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a>
