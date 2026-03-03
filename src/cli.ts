@@ -7,6 +7,7 @@
  *   drive [repo-path]           Run the Curator freshness driver
  *   blueprint [repo-path]       Generate Blueprint Pack from latest decision
  *   review [repo-path]          Print a 4-block editorial review card
+ *   catalog [--all]             Generate season catalog
  *   memory show [--org]         Show memory entries
  *   memory forget <repo-name>   Forget a repo's memory
  *   memory prune <days>         Prune old entries
@@ -27,6 +28,7 @@ import { buildQueryMenu, collectFindings, synthesizeBrief, saveBrief, formatWebB
 import * as org from './org.js';
 import * as blueprint from './blueprint.js';
 import { review } from './review.js';
+import { generateCatalog } from './catalog.js';
 import type { RepoContext, RepoType, DecisionPacket, WebOptions } from './types.js';
 
 function usage(): never {
@@ -35,7 +37,8 @@ function usage(): never {
 Commands:
   drive [repo-path]           Run the Curator freshness driver.
   blueprint [repo-path]       Generate Blueprint Pack from latest decision.
-  review [repo-path]          Print a 4-block editorial review card.
+  review [repo-path]          Print a 4-block editorial review card (--json for JSON).
+  catalog [--all]              Generate season catalog (CATALOG.md + catalog.json).
   memory show [--org]         Show repo memory (or --org for org-level).
   memory forget <repo-name>   Forget all memory for a repo.
   memory prune <days>         Prune entries older than N days.
@@ -52,6 +55,7 @@ Drive options:
   --no-curator         Skip Ollama, use deterministic fallback only.
   --curator-speak      Print Curator callouts (veto/twist/pick/risk).
   --blueprint          Also generate Blueprint Pack after drive.
+  --review             Also print review card after drive.
   --type <type>        Repo type (R1_tooling_cli, etc.). Default: unknown.
   --web                Enable web recommendations.
   --web-cache-ttl <h>  Cache TTL in hours (default: 72).
@@ -84,6 +88,7 @@ async function cmdDrive(args: string[]): Promise<void> {
   const noCurator = args.includes('--no-curator');
   const curatorSpeak = args.includes('--curator-speak');
   const emitBlueprint = args.includes('--blueprint');
+  const emitReview = args.includes('--review');
   const curateOrg = args.includes('--curate-org');
   const repoType: RepoType = (flagValue(args, '--type') as RepoType) ?? 'unknown';
 
@@ -248,6 +253,23 @@ async function cmdDrive(args: string[]): Promise<void> {
       console.error(`Blueprint: ${result.markdown_path}`);
       console.error(`Blueprint: ${result.json_path}`);
       console.error(`Blueprint: ${result.assets_path}/`);
+      if (result.missing_inputs.length > 0) {
+        console.error(`Blueprint: ${result.missing_inputs.length} missing input(s) detected`);
+        for (const m of result.missing_inputs) {
+          console.error(`  ! ${m.what}`);
+        }
+      } else {
+        console.error('Blueprint: all quality gates passed');
+      }
+    }
+  }
+
+  // Print review card if requested
+  if (emitReview) {
+    const card = await review(repoPath);
+    if (card) {
+      console.error('');
+      console.error(card.text);
     }
   }
 
@@ -456,16 +478,38 @@ async function cmdBlueprint(args: string[]): Promise<void> {
 // ── Review command ──────────────────────────────────────────────
 
 async function cmdReview(args: string[]): Promise<void> {
-  const repoPath = resolve(args[0] ?? '.');
+  const jsonMode = args.includes('--json');
+  const positional = args.filter(a => !a.startsWith('--'));
+  const repoPath = resolve(positional[0] ?? '.');
 
-  const card = await review(repoPath);
-  if (!card) {
+  const result = await review(repoPath);
+  if (!result) {
     console.error(`No decision packet found at ${resolve(repoPath, '.artifact', 'decision_packet.json')}`);
     console.error('Run "artifact drive" first to generate a decision.');
     process.exit(1);
   }
 
-  console.log(card);
+  if (jsonMode) {
+    console.log(JSON.stringify(result.json, null, 2));
+  } else {
+    console.log(result.text);
+  }
+}
+
+// ── Catalog command ─────────────────────────────────────────────
+
+async function cmdCatalog(args: string[]): Promise<void> {
+  const all = args.includes('--all');
+  const result = await generateCatalog({ all });
+
+  console.error(`Catalog generated (${result.entry_count} entries):`);
+  console.error(`  ${result.markdown_path}`);
+  console.error(`  ${result.json_path}`);
+
+  // Print markdown to stdout
+  const { readFile: rf } = await import('node:fs/promises');
+  const md = await rf(result.markdown_path, 'utf-8');
+  console.log(md);
 }
 
 // ── Main router ─────────────────────────────────────────────────
@@ -482,6 +526,8 @@ async function main(): Promise<void> {
     await cmdBlueprint(args.slice(1));
   } else if (cmd === 'review') {
     await cmdReview(args.slice(1));
+  } else if (cmd === 'catalog') {
+    await cmdCatalog(args.slice(1));
   } else if (cmd === 'memory') {
     const subCmd = args[1];
     if (subCmd === 'show') {

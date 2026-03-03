@@ -6,15 +6,17 @@
  *   blueprint.json         — machine-readable mirror
  *   assets/                — empty placeholder skeleton
  *
- * No new intelligence. Just makes existing decisions usable.
+ * Quality gates ensure the blueprint is never flimsy.
+ * Provenance hashes make it litigation-proof (in the fun way).
+ * Outline skeleton uses atom-seeded prompt slots, not generic prose.
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import type {
   DecisionPacket, TruthBundle, TruthAtom, WebBrief,
-  WebRecommendation, SelectedHook,
+  SelectedHook,
 } from './types.js';
 
 // ── Load helpers ────────────────────────────────────────────────
@@ -31,7 +33,7 @@ export async function loadPacket(repoPath: string): Promise<DecisionPacket | nul
 }
 
 /** Load the truth bundle from .artifact/ */
-async function loadTruthBundle(repoPath: string): Promise<TruthBundle | null> {
+export async function loadTruthBundle(repoPath: string): Promise<TruthBundle | null> {
   const file = resolve(repoPath, '.artifact', 'truth_bundle.json');
   try {
     const raw = await readFile(file, 'utf-8');
@@ -50,6 +52,89 @@ async function loadWebBrief(repoPath: string): Promise<WebBrief | null> {
   } catch {
     return null;
   }
+}
+
+// ── SHA-256 helper ──────────────────────────────────────────────
+
+async function fileHash(path: string): Promise<string | null> {
+  try {
+    const buf = await readFile(path);
+    return createHash('sha256').update(buf).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+// ── Quality gates ───────────────────────────────────────────────
+
+interface MissingInput {
+  what: string;
+  fix: string;
+}
+
+function checkQualityGates(
+  packet: DecisionPacket,
+  atoms: TruthAtom[],
+): MissingInput[] {
+  const missing: MissingInput[] = [];
+
+  // Gate 1: at least 1 invariant atom with file+line
+  const hasInvariant = atoms.some(a => a.type === 'invariant');
+  if (!hasInvariant) {
+    missing.push({
+      what: 'No invariant atoms found',
+      fix: 'Add documented invariants, guarantees, or constraints to README or source comments.',
+    });
+  }
+
+  // Gate 2: at least 1 sharp_edge or anti_goal atom
+  const hasEdge = atoms.some(a => a.type === 'sharp_edge' || a.type === 'anti_goal');
+  if (!hasEdge) {
+    missing.push({
+      what: 'No sharp_edge or anti_goal atoms found',
+      fix: 'Add a Limitations, Caveats, or Anti-Goals section to README.',
+    });
+  }
+
+  // Gate 3: at least 1 CLI flag/command atom (for tooling repos)
+  const hasCli = atoms.some(a => a.type === 'cli_command' || a.type === 'cli_flag');
+  if (!hasCli) {
+    missing.push({
+      what: 'No cli_command or cli_flag atoms found',
+      fix: 'Add usage examples with flags to README, or ensure --help is documented.',
+    });
+  }
+
+  // Gate 4: freshness payload fully resolved
+  const fp = packet.freshness_payload;
+  if (fp.weird_detail.startsWith('unknown')) {
+    missing.push({
+      what: 'weird_detail unresolved',
+      fix: 'Add at least one specific invariant, error string, or surprising constraint to the codebase.',
+    });
+  }
+  if (fp.recent_change.startsWith('unknown')) {
+    missing.push({
+      what: 'recent_change unresolved',
+      fix: 'No CHANGELOG found; add a CHANGELOG.md with recent entries or ensure recent commits have descriptive messages.',
+    });
+  }
+  if (fp.sharp_edge.startsWith('unknown')) {
+    missing.push({
+      what: 'sharp_edge unresolved',
+      fix: 'No sharp edge found; add a Limitations or Gotchas section to README.',
+    });
+  }
+
+  // Gate 5: signature move present when org curation was used
+  if (packet.season && packet.season !== 'none' && !packet.signature_move) {
+    missing.push({
+      what: 'Org curation active but no signature move assigned',
+      fix: 'Re-run with --curate-org to assign a signature move from the season pool.',
+    });
+  }
+
+  return missing;
 }
 
 // ── Format family descriptions ──────────────────────────────────
@@ -107,49 +192,79 @@ const FORMAT_HINTS: Record<string, string> = {
   P10_presskit_checklist: 'Presskit checklist — what media needs to cover you',
 };
 
+// ── Atom-seeded prompt slots ────────────────────────────────────
+
+/** Find the best atom of a given type for prompt slots */
+function bestAtom(atoms: TruthAtom[], type: string): TruthAtom | undefined {
+  const matches = atoms.filter(a => a.type === type);
+  // Prefer highest confidence
+  matches.sort((a, b) => b.confidence - a.confidence);
+  return matches[0];
+}
+
+/** Build a prompt slot from an atom — asks a question, seeded with real data */
+function promptSlot(label: string, atom: TruthAtom | undefined, fallback: string): string {
+  if (atom) {
+    return `- [ ] ${label}: "${atom.value}" (${atom.source.file}:${atom.source.lineStart})`;
+  }
+  return `- [ ] ${label}: ${fallback}`;
+}
+
 // ── Outline skeleton generator ──────────────────────────────────
 
-function buildOutlineSkeleton(packet: DecisionPacket): string[] {
-  const format = packet.format_candidates[0] ?? 'unknown';
+function buildOutlineSkeleton(packet: DecisionPacket, atoms: TruthAtom[]): string[] {
   const tier = packet.tier;
   const lines: string[] = [];
 
-  // Common preamble sections
+  // Common preamble
   lines.push('## Title');
-  lines.push(`- [ ] Name this artifact (incorporate repo identity: "${packet.repo_name}")`)
+  lines.push(`- [ ] Name this artifact (incorporate repo identity: "${packet.repo_name}")`);
   if (packet.signature_move) {
     lines.push(`- [ ] Apply signature move: **${packet.signature_move}**`);
   }
 
   lines.push('');
   lines.push('## Opening Hook');
-  lines.push('- [ ] Lead with the weird true detail (see Freshness section below)');
-  lines.push('- [ ] Ground in repo identity — this could only be about this repo');
+  lines.push(promptSlot(
+    'Lead with weird true detail',
+    bestAtom(atoms, 'invariant') ?? bestAtom(atoms, 'error_string'),
+    'find the most surprising real fact from the codebase',
+  ));
+  lines.push(promptSlot(
+    'Ground in repo identity',
+    bestAtom(atoms, 'repo_tagline') ?? bestAtom(atoms, 'core_purpose'),
+    'what makes this repo unique?',
+  ));
 
-  // Tier-specific body sections
+  // Tier-specific body with atom-seeded slots
   lines.push('');
   if (tier === 'Exec') {
     lines.push('## Situation');
-    lines.push('- [ ] What exists, what\'s at stake');
+    lines.push(promptSlot('Explain core purpose', bestAtom(atoms, 'core_purpose'), 'what problem does this solve?'));
+    lines.push(promptSlot('State the guarantee', bestAtom(atoms, 'guarantee'), 'what does it promise?'));
     lines.push('');
     lines.push('## Decision / Insight');
     lines.push('- [ ] The one thing the reader needs to walk away with');
     lines.push('');
     lines.push('## Evidence');
-    lines.push('- [ ] Ground in truth atoms (invariants, guarantees, real numbers)');
+    lines.push(promptSlot('Cite invariant', bestAtom(atoms, 'invariant'), 'real constraint or rule'));
+    lines.push(promptSlot('Cite anti-goal', bestAtom(atoms, 'anti_goal'), 'what it deliberately does NOT do'));
   } else if (tier === 'Dev') {
     lines.push('## Setup / Prerequisites');
-    lines.push('- [ ] What the reader needs before starting');
+    lines.push(promptSlot('Primary CLI command', bestAtom(atoms, 'cli_command'), 'install or run command'));
     lines.push('');
     lines.push('## Core Content');
-    lines.push('- [ ] The main technical payload');
-    lines.push('- [ ] Include real commands, flags, config keys from truth atoms');
+    lines.push(promptSlot('Key CLI flag', bestAtom(atoms, 'cli_flag'), 'most important flag/option'));
+    lines.push(promptSlot('Config key', bestAtom(atoms, 'config_key'), 'primary configuration option'));
+    lines.push(promptSlot('Explain invariant', bestAtom(atoms, 'invariant'), 'design constraint the user should know'));
     lines.push('');
     lines.push('## Edge Cases / Gotchas');
-    lines.push('- [ ] Sharp edges and failure modes');
+    lines.push(promptSlot('Describe sharp edge', bestAtom(atoms, 'sharp_edge'), 'what breaks or surprises'));
+    lines.push(promptSlot('Error to expect', bestAtom(atoms, 'error_string'), 'common error and what triggers it'));
   } else if (tier === 'Creator') {
     lines.push('## Design Intent');
-    lines.push('- [ ] What this visual/asset communicates');
+    lines.push(promptSlot('Visual identity from', bestAtom(atoms, 'core_object'), 'what visual metaphor fits?'));
+    lines.push(promptSlot('Anti-goal constraint', bestAtom(atoms, 'anti_goal'), 'what it must NOT look like'));
     lines.push('');
     lines.push('## Specifications');
     lines.push('- [ ] Dimensions, formats, color constraints');
@@ -158,30 +273,32 @@ function buildOutlineSkeleton(packet: DecisionPacket): string[] {
     lines.push('- [ ] Required variants (dark/light, sizes, contexts)');
   } else if (tier === 'Fun') {
     lines.push('## Rules / Mechanic');
-    lines.push('- [ ] How it works (grounded in repo mechanics)');
+    lines.push(promptSlot('Core game loop from', bestAtom(atoms, 'core_object'), 'what is the repo\'s main "move"?'));
+    lines.push(promptSlot('Constraint to embed', bestAtom(atoms, 'invariant'), 'real rule that becomes a game rule'));
     lines.push('');
     lines.push('## Content');
-    lines.push('- [ ] The playable/readable payload');
-    lines.push('- [ ] Each piece must trace to a real repo fact');
+    lines.push(promptSlot('Error as obstacle', bestAtom(atoms, 'error_string'), 'real error that becomes a challenge'));
+    lines.push(promptSlot('CLI flag as power-up', bestAtom(atoms, 'cli_flag'), 'real flag that becomes an ability'));
     lines.push('');
     lines.push('## Win Condition / Punchline');
-    lines.push('- [ ] What "done" looks like');
+    lines.push(promptSlot('Guarantee as win state', bestAtom(atoms, 'guarantee'), 'what "winning" looks like'));
   } else if (tier === 'Promotion') {
     lines.push('## The Claim');
-    lines.push('- [ ] One sentence: what this tool does for you');
+    lines.push(promptSlot('Tagline from', bestAtom(atoms, 'repo_tagline'), 'one sentence: what this tool does for you'));
     lines.push('');
     lines.push('## The Proof');
-    lines.push('- [ ] Evidence grounded in truth atoms');
+    lines.push(promptSlot('Cite invariant as evidence', bestAtom(atoms, 'invariant'), 'real constraint that proves quality'));
+    lines.push(promptSlot('Cite sharp edge honestly', bestAtom(atoms, 'sharp_edge'), 'the limitation that builds trust'));
     lines.push('');
     lines.push('## Call to Action');
-    lines.push('- [ ] What the reader does next');
+    lines.push(promptSlot('Install command', bestAtom(atoms, 'cli_command'), 'what the reader runs first'));
   }
 
   // Closing
   lines.push('');
   lines.push('## Closing');
-  lines.push('- [ ] Reinforce the sharp edge (what to watch for)');
-  lines.push('- [ ] End with the repo\'s core promise');
+  lines.push(promptSlot('Reinforce sharp edge', bestAtom(atoms, 'sharp_edge') ?? bestAtom(atoms, 'anti_goal'), 'what to watch for'));
+  lines.push(promptSlot('End with core promise', bestAtom(atoms, 'guarantee') ?? bestAtom(atoms, 'core_purpose'), 'the repo\'s fundamental value'));
 
   return lines;
 }
@@ -194,10 +311,19 @@ function resolveHookAtom(hook: SelectedHook, atoms: TruthAtom[]): TruthAtom | un
 
 // ── Build ARTIFACT_BLUEPRINT.md ─────────────────────────────────
 
+interface ProvenanceHashes {
+  packet: string | null;
+  bundle: string | null;
+  webBrief: string | null;
+}
+
 function buildMarkdown(
   packet: DecisionPacket,
   atoms: TruthAtom[],
   webBrief: WebBrief | null,
+  missingInputs: MissingInput[],
+  hashes: ProvenanceHashes,
+  version: string,
 ): string {
   const lines: string[] = [];
   const format = packet.format_candidates[0] ?? 'unknown';
@@ -206,8 +332,20 @@ function buildMarkdown(
   // Header
   lines.push(`# Artifact Blueprint: ${packet.repo_name}`);
   lines.push('');
-  lines.push(`> Generated ${packet.driver_meta.timestamp.slice(0, 19)} by artifact ${packet.driver_meta.mode} driver`);
+  lines.push(`> Generated ${packet.driver_meta.timestamp.slice(0, 19)} by artifact v${version} (${packet.driver_meta.mode} driver)`);
   lines.push('');
+
+  // ── Missing Inputs (quality gates) ──
+  if (missingInputs.length > 0) {
+    lines.push('## Missing Inputs');
+    lines.push('');
+    lines.push('*The following gaps were detected. Blueprint still generated, but address these for a stronger artifact:*');
+    lines.push('');
+    for (const m of missingInputs) {
+      lines.push(`- **${m.what}** — ${m.fix}`);
+    }
+    lines.push('');
+  }
 
   // ── Pick ──
   lines.push('## Pick');
@@ -336,9 +474,9 @@ function buildMarkdown(
   lines.push('');
   lines.push('# Outline Skeleton');
   lines.push('');
-  lines.push('*Headings and bullet prompts — fill in, do not re-decide.*');
+  lines.push('*Atom-seeded prompt slots — fill in each checkbox, do not re-decide.*');
   lines.push('');
-  lines.push(...buildOutlineSkeleton(packet));
+  lines.push(...buildOutlineSkeleton(packet, atoms));
   lines.push('');
 
   // ── Provenance ──
@@ -346,14 +484,20 @@ function buildMarkdown(
   lines.push('');
   lines.push('## Provenance');
   lines.push('');
-  lines.push(`- Decision packet: \`.artifact/decision_packet.json\``);
-  lines.push(`- Truth bundle: ${atoms.length} atoms from scanned files`);
+  lines.push(`- artifact v${version}`);
+  lines.push(`- decision_packet: \`.artifact/decision_packet.json\`${hashes.packet ? ` (sha256: \`${hashes.packet.slice(0, 16)}...\`)` : ''}`);
+  lines.push(`- truth_bundle: ${atoms.length} atoms${hashes.bundle ? ` (sha256: \`${hashes.bundle.slice(0, 16)}...\`)` : ''}`);
+  if (webBrief) {
+    lines.push(`- web_brief: \`.artifact/web/brief.json\`${hashes.webBrief ? ` (sha256: \`${hashes.webBrief.slice(0, 16)}...\`)` : ''}`);
+  }
   lines.push(`- Driver: ${packet.driver_meta.mode} (model: ${packet.driver_meta.model ?? 'n/a'}, host: ${packet.driver_meta.host ?? 'n/a'})`);
   if (packet.season && packet.season !== 'none') {
     lines.push(`- Org ledger: \`~/.artifact/org/ledger.jsonl\``);
   }
-  if (webBrief) {
-    lines.push(`- Web brief: \`.artifact/web/brief.json\``);
+  if (missingInputs.length > 0) {
+    lines.push(`- Quality gates: ${missingInputs.length} missing input(s) detected`);
+  } else {
+    lines.push(`- Quality gates: all passed`);
   }
   lines.push('');
 
@@ -365,6 +509,7 @@ function buildMarkdown(
 interface BlueprintJson {
   repo_name: string;
   generated_at: string;
+  version: string;
   driver_mode: string;
   pick: {
     tier: string;
@@ -404,14 +549,20 @@ interface BlueprintJson {
     pick: string;
     risk: string;
   };
+  missing_inputs: MissingInput[];
   provenance: {
     decision_packet: string;
+    decision_packet_sha256: string | null;
+    truth_bundle_sha256: string | null;
+    web_brief_sha256: string | null;
     truth_atoms_count: number;
     driver_mode: string;
     model: string | null;
     host: string | null;
     org_ledger: boolean;
     web_brief: boolean;
+    version: string;
+    quality_gates_passed: boolean;
   };
 }
 
@@ -419,12 +570,16 @@ function buildJson(
   packet: DecisionPacket,
   atoms: TruthAtom[],
   webBrief: WebBrief | null,
+  missingInputs: MissingInput[],
+  hashes: ProvenanceHashes,
+  version: string,
 ): BlueprintJson {
   const format = packet.format_candidates[0] ?? 'unknown';
 
   return {
     repo_name: packet.repo_name,
     generated_at: new Date().toISOString(),
+    version,
     driver_mode: packet.driver_meta.mode,
     pick: {
       tier: packet.tier,
@@ -455,14 +610,20 @@ function buildJson(
       ? webBrief.recommendations
       : null,
     callouts: packet.callouts,
+    missing_inputs: missingInputs,
     provenance: {
       decision_packet: '.artifact/decision_packet.json',
+      decision_packet_sha256: hashes.packet,
+      truth_bundle_sha256: hashes.bundle,
+      web_brief_sha256: hashes.webBrief,
       truth_atoms_count: atoms.length,
       driver_mode: packet.driver_meta.mode,
       model: packet.driver_meta.model,
       host: packet.driver_meta.host,
       org_ledger: !!(packet.season && packet.season !== 'none'),
       web_brief: !!webBrief,
+      version,
+      quality_gates_passed: missingInputs.length === 0,
     },
   };
 }
@@ -473,6 +634,19 @@ export interface BlueprintResult {
   markdown_path: string;
   json_path: string;
   assets_path: string;
+  missing_inputs: MissingInput[];
+}
+
+/** Read package.json version */
+async function getVersion(repoPath: string): Promise<string> {
+  try {
+    const pkgPath = resolve(repoPath, 'package.json');
+    const raw = await readFile(pkgPath, 'utf-8');
+    const pkg = JSON.parse(raw) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
 }
 
 /**
@@ -487,17 +661,29 @@ export async function generate(repoPath: string, packet?: DecisionPacket): Promi
   const atoms = truthBundle?.atoms ?? [];
   const webBrief = await loadWebBrief(repoPath);
 
+  // Quality gates
+  const missingInputs = checkQualityGates(pkt, atoms);
+
+  // Provenance hashes
   const outDir = resolve(repoPath, '.artifact');
+  const hashes: ProvenanceHashes = {
+    packet: await fileHash(resolve(outDir, 'decision_packet.json')),
+    bundle: await fileHash(resolve(outDir, 'truth_bundle.json')),
+    webBrief: await fileHash(resolve(outDir, 'web', 'brief.json')),
+  };
+
+  const version = await getVersion(repoPath);
+
   const assetsDir = resolve(outDir, 'assets');
   await mkdir(assetsDir, { recursive: true });
 
   // Generate markdown
-  const md = buildMarkdown(pkt, atoms, webBrief);
+  const md = buildMarkdown(pkt, atoms, webBrief, missingInputs, hashes, version);
   const mdPath = resolve(outDir, 'ARTIFACT_BLUEPRINT.md');
   await writeFile(mdPath, md, 'utf-8');
 
   // Generate JSON
-  const json = buildJson(pkt, atoms, webBrief);
+  const json = buildJson(pkt, atoms, webBrief, missingInputs, hashes, version);
   const jsonPath = resolve(outDir, 'blueprint.json');
   await writeFile(jsonPath, JSON.stringify(json, null, 2) + '\n', 'utf-8');
 
@@ -505,5 +691,8 @@ export async function generate(repoPath: string, packet?: DecisionPacket): Promi
     markdown_path: mdPath,
     json_path: jsonPath,
     assets_path: assetsDir,
+    missing_inputs: missingInputs,
   };
 }
+
+export { FORMAT_HINTS };
