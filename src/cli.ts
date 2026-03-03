@@ -179,14 +179,17 @@ async function cmdDrive(args: string[]): Promise<void> {
 
       // Build curation brief (if --curate-org enabled)
       let curationBriefText: string | undefined;
+      let promotionMandate = false;
       if (curateOrg) {
         const curation = await org.buildCurationBrief(repoName);
         const seasonLabel = curation.season?.name ?? 'none';
-        console.error(`Org: season="${seasonLabel}", ${curation.org_bans.length} bans, ${curation.org_gaps.length} gaps, move=${curation.assigned_move ?? 'none'}`);
+        promotionMandate = curation.promotion_mandate;
+        const mandateLabel = promotionMandate ? ', PROMOTION MANDATE' : '';
+        console.error(`Org: season="${seasonLabel}", ${curation.org_bans.length} bans, ${curation.org_gaps.length} gaps, move=${curation.assigned_move ?? 'none'}${mandateLabel}`);
         curationBriefText = curation.formatted;
       }
 
-      const result = await curatorDrive(conn, ctx, store, brief.formatted || undefined, webBriefText, curationBriefText);
+      const result = await curatorDrive(conn, ctx, store, brief.formatted || undefined, webBriefText, curationBriefText, promotionMandate);
       if (result) {
         packet = result;
         // Attach org curation metadata to packet
@@ -196,6 +199,20 @@ async function cmdDrive(args: string[]): Promise<void> {
           packet.org_bans_applied = curation.org_bans.map(b => b.item);
           packet.org_gap_bias = curation.org_gaps;
           packet.signature_move = curation.assigned_move ?? undefined;
+          if (!packet.promotion_mandate) packet.promotion_mandate = curation.promotion_mandate || undefined;
+        }
+        // Log promotion mandate result and track attempts
+        if (promotionMandate) {
+          if (packet.tier === 'Promotion') {
+            console.error('Promotion: mandate fulfilled — Promotion tier selected');
+            await org.recordMandateSuccess();
+          } else if (packet.promotion_rejection) {
+            console.error(`Promotion: mandate rejected (${packet.promotion_rejection})`);
+            await org.recordMandateRejection(packet.promotion_rejection);
+          } else {
+            console.error('Promotion: mandate overrode Curator choice → Promotion tier');
+            await org.recordMandateSuccess();
+          }
         }
       } else {
         console.error('Curator: Ollama responded but output was invalid. Falling back.');

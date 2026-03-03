@@ -14,6 +14,13 @@ export type RepoType =
 /** Artifact tier */
 export type Tier = 'Exec' | 'Dev' | 'Creator' | 'Fun' | 'Promotion';
 
+/** Valid reasons a Curator can reject a Promotion mandate */
+export type PromotionRejection =
+  | 'no_shareable_surface'
+  | 'repo_private_or_internal'
+  | 'insufficient_truth_atoms'
+  | 'compliance_risk';
+
 /** Hook type codes */
 export type HookType = 'H1_name' | 'H2_core_loop' | 'H3_failure_mode' | 'H4_artifact_of_record' | 'H5_constraint';
 
@@ -112,6 +119,9 @@ export interface DecisionPacket {
   org_bans_applied?: string[];
   org_gap_bias?: string[];
   signature_move?: string;
+  // Phase 8: Promotion mandate
+  promotion_mandate?: boolean;
+  promotion_rejection?: PromotionRejection;
 }
 
 /** A hook chosen by the Curator, traced back to an atom */
@@ -249,5 +259,6 @@ export interface CurationBrief {
   org_bans: Array<{ item: string; reason: string }>;
   org_gaps: string[];
   assigned_move: SignatureMove | null;
+  promotion_mandate: boolean;
   formatted: string;
 }

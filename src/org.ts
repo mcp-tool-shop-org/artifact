@@ -334,6 +334,111 @@ const TIER_TARGETS: Record<Tier, number> = {
   Exec: 0.10,
 };
 
+/** Max rejected Promotion mandates before we stop mandating */
+const PROMOTION_MANDATE_MAX_REJECTIONS = 5;
+/** Minimum ledger entries before Promotion mandate activates */
+const PROMOTION_MANDATE_MIN_ENTRIES = 8;
+
+/** Path to promotion mandate tracking file */
+const PROMOTION_MANDATE_FILE = join(ORG_DIR, 'promotion_mandate.json');
+
+interface PromotionMandateStore {
+  rejections: number;
+  last_rejection_reason?: string;
+}
+
+async function loadMandateStore(): Promise<PromotionMandateStore> {
+  try {
+    const raw = await readFile(PROMOTION_MANDATE_FILE, 'utf-8');
+    return JSON.parse(raw) as PromotionMandateStore;
+  } catch {
+    return { rejections: 0 };
+  }
+}
+
+async function saveMandateStore(store: PromotionMandateStore): Promise<void> {
+  await ensureDir();
+  await writeFile(PROMOTION_MANDATE_FILE, JSON.stringify(store, null, 2) + '\n', 'utf-8');
+}
+
+/** Record a mandate rejection (Curator gave a valid reason to skip Promotion) */
+export async function recordMandateRejection(reason: string): Promise<void> {
+  const store = await loadMandateStore();
+  store.rejections += 1;
+  store.last_rejection_reason = reason;
+  await saveMandateStore(store);
+}
+
+/** Record a mandate success (Promotion was selected) — resets the counter */
+export async function recordMandateSuccess(): Promise<void> {
+  await saveMandateStore({ rejections: 0 });
+}
+
+/** Check if Promotion mandate should be active */
+export async function shouldMandatePromotion(ledger: LedgerEntry[]): Promise<boolean> {
+  if (ledger.length < PROMOTION_MANDATE_MIN_ENTRIES) return false;
+
+  // Already have Promotion entries? No mandate needed.
+  const promotionCount = ledger.filter(e => e.tier === 'Promotion').length;
+  if (promotionCount > 0) return false;
+
+  // Too many rejected attempts? Stop mandating.
+  const store = await loadMandateStore();
+  if (store.rejections >= PROMOTION_MANDATE_MAX_REJECTIONS) return false;
+
+  return true;
+}
+
+/** Soft recency penalties — advisory, not bans */
+function computeRecencyPenalties(ledger: LedgerEntry[]): string[] {
+  const penalties: string[] = [];
+
+  // Tier recency: same tier in last 3 runs
+  const last3 = ledger.slice(-3);
+  if (last3.length === 3) {
+    const tierCounts = new Map<string, number>();
+    for (const e of last3) {
+      tierCounts.set(e.tier, (tierCounts.get(e.tier) ?? 0) + 1);
+    }
+    for (const [tier, count] of tierCounts) {
+      if (count >= 2) {
+        penalties.push(`${tier} tier used ${count}x in last 3 runs — prefer other tiers`);
+      }
+    }
+  }
+
+  // Format recency: same format in last 5 runs
+  const last5 = ledger.slice(-5);
+  if (last5.length >= 3) {
+    const fmtCounts = new Map<string, number>();
+    for (const e of last5) {
+      fmtCounts.set(e.format_family, (fmtCounts.get(e.format_family) ?? 0) + 1);
+    }
+    for (const [fmt, count] of fmtCounts) {
+      if (count >= 2) {
+        penalties.push(`${fmt} used ${count}x in last 5 runs — prefer other formats`);
+      }
+    }
+  }
+
+  // Move recency: same move in last 3 runs
+  if (last3.length >= 2) {
+    const moveCounts = new Map<string, number>();
+    for (const e of last3) {
+      if (e.signature_move) {
+        moveCounts.set(e.signature_move, (moveCounts.get(e.signature_move) ?? 0) + 1);
+      }
+    }
+    for (const [move, count] of moveCounts) {
+      if (count >= 2) {
+        penalties.push(`${move} move used ${count}x in last 3 runs — prefer other moves`);
+      }
+    }
+  }
+
+  return penalties;
+}
+
 function computeGaps(ledger: LedgerEntry[], season: Season | null): string[] {
   if (ledger.length < 3) return []; // Not enough data
 
@@ -443,7 +548,9 @@ export async function buildCurationBrief(repoName: string): Promise<CurationBrie
   const bans = computeBans(ledger);
   const gaps = computeGaps(ledger, season);
   const move = await assignMove(repoName, season, ledger);
-  const history = getOrgHistory(ledger);
+  const orgHistory = getOrgHistory(ledger);
+  const recencyPenalties = computeRecencyPenalties(ledger);
+  const promotionMandate = await shouldMandatePromotion(ledger);
 
   // Format for prompt injection
   const lines: string[] = ['=== ORG CURATION BRIEF ==='];
@@ -465,10 +572,10 @@ export async function buildCurationBrief(repoName: string): Promise<CurationBrie
   }
 
   // Org history
-  if (history.recent_formats.length > 0) {
+  if (orgHistory.recent_formats.length > 0) {
     lines.push('');
-    lines.push(`Recent org formats (avoid repeating): ${history.recent_formats.join(', ')}`);
-    lines.push(`Recent org tiers: ${history.recent_tiers.join(', ')}`);
+    lines.push(`Recent org formats (avoid repeating): ${orgHistory.recent_formats.join(', ')}`);
+    lines.push(`Recent org tiers: ${orgHistory.recent_tiers.join(', ')}`);
   }
 
   // Bans
@@ -480,6 +587,15 @@ export async function buildCurationBrief(repoName: string): Promise<CurationBrie
     }
   }
 
+  // Soft recency penalties
+  if (recencyPenalties.length > 0) {
+    lines.push('');
+    lines.push('RECENCY PENALTIES (soft — prefer variety):');
+    for (const p of recencyPenalties) {
+      lines.push(`  - ${p}`);
+    }
+  }
+
   // Gaps
   if (gaps.length > 0) {
     lines.push('');
@@ -487,6 +603,30 @@ export async function buildCurationBrief(repoName: string): Promise<CurationBrie
     for (const g of gaps) {
       lines.push(`  - ${g}`);
     }
+  }
+
+  // Promotion mandate
+  if (promotionMandate) {
+    lines.push('');
+    lines.push('=== PROMOTION MANDATE (BINDING) ===');
+    lines.push('Promotion tier is at 0% coverage with 8+ entries. This is a structural gap.');
+    lines.push('You MUST choose Promotion tier UNLESS the repo genuinely cannot support it.');
+    lines.push('');
+    lines.push('To reject Promotion, you MUST add a "promotion_rejection" field with one of:');
+    lines.push('  - "no_shareable_surface" — repo has nothing demo-able or pitch-able');
+    lines.push('  - "repo_private_or_internal" — repo is internal/private, not for public');
+    lines.push('  - "insufficient_truth_atoms" — fewer than 10 truth atoms extracted');
+    lines.push('  - "compliance_risk" — repo handles sensitive data, promotion inappropriate');
+    lines.push('');
+    lines.push('If you do NOT provide a valid rejection reason, your tier will be overridden to Promotion.');
+    lines.push('');
+    lines.push('PROMOTION GROUNDING (required when Promotion is chosen):');
+    lines.push('Promotion artifacts MUST include in must_include:');
+    lines.push('  - one CLI command or API call from the repo');
+    lines.push('  - one invariant or guarantee');
+    lines.push('  - one weird true detail (from truth atoms)');
+    lines.push('  - one sharp edge or honest limitation');
+    lines.push('This makes Promotion "shareable truth," not marketing fluff.');
   }
 
   // Signature move
@@ -503,6 +643,7 @@ export async function buildCurationBrief(repoName: string): Promise<CurationBrie
     org_bans: bans,
     org_gaps: gaps,
     assigned_move: move,
+    promotion_mandate: promotionMandate,
     formatted: lines.join('\n'),
   };
 }

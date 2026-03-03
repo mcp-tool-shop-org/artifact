@@ -6,7 +6,7 @@
 
 import type { OllamaConnection } from './ollama.js';
 import { generate } from './ollama.js';
-import type { DecisionPacket, RepoContext, HistoryStore, FreshnessPayload, Tier, TruthAtom, SelectedHook, Callouts, WebBrief } from './types.js';
+import type { DecisionPacket, RepoContext, HistoryStore, FreshnessPayload, Tier, TruthAtom, SelectedHook, Callouts, WebBrief, PromotionRejection } from './types.js';
 import { recentTiers, recentFormats, recentConstraints, recentAtomIds } from './history.js';
 
 const TIERS: Tier[] = ['Exec', 'Dev', 'Creator', 'Fun', 'Promotion'];
@@ -113,9 +113,20 @@ RESPOND WITH ONLY THIS JSON (no markdown fences, no text outside):
     "twist": "...",
     "pick": "...",
     "risk": "..."
-  }
-}`;
+  },
+  "promotion_rejection": null
 }
+
+NOTE: "promotion_rejection" should be null unless a PROMOTION MANDATE is active in the org curation brief AND you are rejecting it.
+Valid rejection values: "no_shareable_surface", "repo_private_or_internal", "insufficient_truth_atoms", "compliance_risk".`;
+}
+
+const VALID_PROMOTION_REJECTIONS: PromotionRejection[] = [
+  'no_shareable_surface',
+  'repo_private_or_internal',
+  'insufficient_truth_atoms',
+  'compliance_risk',
+];
 
 interface CuratorResponse {
   tier?: string;
@@ -126,6 +137,7 @@ interface CuratorResponse {
   selected_hooks?: Array<{ atom_id?: string; role?: string }>;
   freshness_payload?: Partial<FreshnessPayload>;
   callouts?: Partial<Callouts>;
+  promotion_rejection?: string;
 }
 
 function validateCallouts(raw: Partial<Callouts> | undefined): Callouts {
@@ -235,6 +247,7 @@ export async function drive(
   memoryBrief?: string,
   webBrief?: string,
   curationBrief?: string,
+  promotionMandate?: boolean,
 ): Promise<DecisionPacket | null> {
   const prompt = buildPrompt(ctx, history, memoryBrief, webBrief, curationBrief);
   const raw = await generate(conn, prompt);
@@ -243,13 +256,31 @@ export async function drive(
   const parsed = parseResponse(raw);
   if (!parsed) return null;
 
-  const tier = validateTier(parsed.tier);
+  let tier = validateTier(parsed.tier);
+  let promotionRejection: PromotionRejection | undefined;
+
+  // Promotion mandate enforcement
+  if (promotionMandate && tier !== 'Promotion') {
+    const rawRejection = parsed.promotion_rejection;
+    if (typeof rawRejection === 'string' &&
+        VALID_PROMOTION_REJECTIONS.includes(rawRejection as PromotionRejection)) {
+      // Valid rejection — log it but respect the Curator's choice
+      promotionRejection = rawRejection as PromotionRejection;
+    } else {
+      // No valid rejection — override to Promotion
+      tier = 'Promotion';
+    }
+  }
+
   const selectedHooks = validateHooks(parsed.selected_hooks, ctx.truth_bundle.atoms);
+
+  // If we overrode to Promotion, re-validate format candidates against Promotion pool
+  const formatCandidates = validateFormats(parsed.format_candidates, tier);
 
   return {
     repo_name: ctx.repo_name,
     tier,
-    format_candidates: validateFormats(parsed.format_candidates, tier),
+    format_candidates: formatCandidates,
     constraints: validateStringArray(parsed.constraints, ['monospace-only', 'uses-failure-mode']),
     must_include: validateStringArray(parsed.must_include, ['one repo-specific invariant', 'one concrete command or flag', 'one failure mode']),
     ban_list: validateStringArray(parsed.ban_list, []),
@@ -262,6 +293,8 @@ export async function drive(
       mode: 'ollama',
       timestamp: new Date().toISOString(),
     },
+    promotion_mandate: promotionMandate || undefined,
+    promotion_rejection: promotionRejection,
   };
 }
 
