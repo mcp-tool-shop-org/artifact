@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="README.ja.md">日本語</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.md">English</a> | <a href="README.pt-BR.md">Português (BR)</a> | <a href="README.zh.md">中文</a>
+  <a href="README.md">English</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
@@ -88,6 +88,24 @@ artifact ritual /path/to/repo
 | `config get [key]` | 設定値を確認します。 |
 | `config set <key> <value>` | 設定を変更します（例：`agent_name`）。 |
 
+### 一括処理と公開
+
+| コマンド | 機能 |
+|---------|-------------|
+| `crawl --org <name>` | GitHub組織内のすべてのリポジトリを一括で管理 |
+| `crawl --from <file>` | テキストファイルにリストされたリポジトリをクロール |
+| `publish --pages-repo <o/r>` | カタログをGitHub Pagesに公開 |
+| `privacy` | ストレージの場所とデータポリシーを表示 |
+| `reset --org\ | --cache\ | --all` | 保存されたデータを削除（確認が必要） |
+
+### ビルドされた成果物の追跡
+
+| コマンド | 機能 |
+|---------|-------------|
+| `built add <repo> <path...>` | 成果物ファイルのパスを関連付け |
+| `built ls [repo-name]` | ビルド状況を表示 |
+| `built status <repo-name>` | 特定の1つのリポジトリの詳細な追跡 |
+
 ## 実行オプション
 
 ```
@@ -135,19 +153,32 @@ artifact whoami
 artifact config set agent_name vera
 ```
 
+## リモートオプション
+
+すべての主要なコマンドは、ローカルのクローンなしでGitHubリポジトリを分析するために、`--remote`オプションをサポートします。
+
+```
+--remote <owner/repo>  Analyze a GitHub repo without cloning
+--ref <branch|tag|sha> Git ref for remote repos (default: default branch)
+--remote-refresh       Bypass remote cache, re-fetch all API data
+```
+
+結果は`~/.artifact/repos/owner/repo/`にキャッシュされます。プライベートリポジトリの場合、`GITHUB_TOKEN`が必要であり、レート制限も高くなります。
+
 ## 脅威モデル
 
-- **Ollama はローカルでのみ動作します。** データはあなたのマシンから一切外部に出ません。`localhost` にのみ接続します。
-- **テレメトリーはありません。** ローカルの Ollama へのネットワーク接続のみを行います。
-- **機密情報は扱いません。** 認証情報を読み込んだり、保存したり、送信したりしません。
-- **履歴はローカルに保存されます。** `.artifact/` はレポジトリ内に保存され、通常は git で無視されます。
-- **フォールバックは決定論的です。** Ollama が利用できない場合、出力はレポジトリの情報を元にシードされ、再現可能です（ランダムではありません）。
-- **ファイルスコープ：** レポジトリのソースファイルを読み込み、`.artifact/` と `~/.artifact/` のみに書き込みます。
+- **Ollamaはローカルでのみ動作します。** データはあなたのマシンから一切外部に出ません。`localhost`にのみ接続します。
+- **テレメトリーはありません。** 分析もありません。外部へのデータ送信もありません。
+- **機密情報は扱いません。** 認証情報を読み込んだり、保存したり、送信したりすることはありません。
+- **履歴はローカルに保存されます。** `.artifact/`はリポジトリ内に保存され、通常は`.gitignore`で無視されます。
+- **フォールバックは決定論的です。** Ollamaが利用できない場合、出力はリポジトリの情報に基づいて生成されます。再現可能であり、ランダムではありません。
+- **ファイル範囲:** リポジトリのソースファイルを読み込み、`.artifact/`と`~/.artifact/`のみに書き込みます。
 
 ## 環境変数
 
 | 変数 | 目的 |
 |----------|---------|
+| `GITHUB_TOKEN` | リモートアクセス、クロール、公開のためのGitHub Personal Access Token (PAT) (1時間あたり5000リクエスト vs 60) |
 | `OLLAMA_HOST` | Ollama のエンドポイントを上書きします（デフォルト：自動検出）。 |
 | `ARTIFACT_OLLAMA_MODEL` | 特定の Ollama モデルを強制的に使用します。 |
 

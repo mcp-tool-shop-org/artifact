@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="README.es.md">Español</a> | <a href="README.md">English</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.ja.md">日本語</a> | <a href="README.pt-BR.md">Português (BR)</a> | <a href="README.zh.md">中文</a>
+  <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.md">English</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
 
 Sistema de toma de decisiones para artefactos de repositorio. Ejecuta un proceso de verificación de actualización en cualquier repositorio y genera un paquete de decisiones estructurado: nivel, formato, restricciones, ganchos, afirmaciones de verdad con referencias `archivo:línea`.
 
-El "Curador" (Ollama local) controla el proceso de toma de decisiones. Si Ollama no está disponible, un mecanismo de respaldo determinista genera una salida válida utilizando perfiles de inferencia y rotación predefinida.
+El componente "Curator" (local Ollama) controla el proceso de toma de decisiones. Si Ollama no está disponible, se utiliza un mecanismo de respaldo determinista que genera una salida válida utilizando perfiles de inferencia y rotación.
 
 ## Instalación
 
@@ -49,11 +49,11 @@ artifact ritual /path/to/repo
 
 | Comando | ¿Qué hace? |
 |---------|-------------|
-| `drive [repo-path]` | Ejecuta el proceso de verificación de actualización del "Curador". |
+| `drive [repo-path]` | Ejecuta el proceso de verificación de actualización de "Curator". |
 | `infer [repo-path]` | Calcula el perfil de inferencia (no se necesita Ollama). |
 | `ritual [repo-path]` | Ritual completo: verificación + esquema + revisión + catálogo. |
 | `blueprint [repo-path]` | Genera un paquete de esquema a partir de la última decisión. |
-| `buildpack [repo-path]` | Genera un paquete de solicitud para modelos de lenguaje grandes (LLM) para chat. |
+| `buildpack [repo-path]` | Genera un paquete de solicitud para modelos de lenguaje (LLM) de tipo chat. |
 | `verify [repo-path] --artifact <path>` | Verifica un artefacto según el esquema y el conjunto de afirmaciones de verdad. |
 | `review [repo-path]` | Imprime una tarjeta de revisión editorial de 4 secciones. |
 | `catalog` | Genera un catálogo de la temporada. |
@@ -73,7 +73,7 @@ artifact ritual /path/to/repo
 | Comando | ¿Qué hace? |
 |---------|-------------|
 | `memory show [--org]` | Muestra la memoria a nivel de repositorio u organización. |
-| `memory forget <name>` | Borra la memoria de un repositorio. |
+| `memory forget <name>` | Olvidar la memoria de un repositorio. |
 | `memory prune <days>` | Elimina las entradas con más de N días de antigüedad. |
 | `memory stats` | Estadísticas de la memoria. |
 
@@ -85,10 +85,28 @@ artifact ritual /path/to/repo
 | `org status` | Cobertura, puntaje de diversidad, lagunas. |
 | `org ledger [n]` | Últimas N decisiones. |
 | `org bans` | Prohibiciones automáticas actuales con sus razones. |
-| `config get [key]` | Lee los valores de la configuración. |
+| `config get [key]` | Lee los valores de configuración. |
 | `config set <key> <value>` | Establece la configuración (por ejemplo, `agent_name`). |
 
-## Opciones de verificación
+### Procesamiento por lotes y publicación
+
+| Comando | ¿Qué hace? |
+|---------|-------------|
+| `crawl --org <name>` | Realiza la curación por lotes de todos los repositorios en una organización de GitHub. |
+| `crawl --from <file>` | Explora los repositorios listados en un archivo de texto. |
+| `publish --pages-repo <o/r>` | Publica el catálogo en GitHub Pages. |
+| `privacy` | Muestra las ubicaciones de almacenamiento y la política de datos. |
+| `reset --org` | `--cache` | `--all` | Elimina los datos almacenados (con confirmación). |
+
+### Seguimiento de artefactos construidos
+
+| Comando | ¿Qué hace? |
+|---------|-------------|
+| `built add <repo> <path...>` | Asocia rutas de archivo de artefactos. |
+| `built ls [repo-name]` | Lista el estado de construcción. |
+| `built status <repo-name>` | Seguimiento detallado para un repositorio. |
+
+## Opciones de ejecución
 
 ```
 --no-curator         Skip Ollama, use deterministic fallback
@@ -126,29 +144,42 @@ Tres personalidades de curador predefinidas. La predeterminada es: **Glyph**.
 
 | Personalidad | Rol | Lema |
 |---------|------|-------|
-| Glyph | Diseñador travieso | Sin pruebas, no hay resultados. |
-| Mina | Curador de museo | Hazlo específico. Hazlo coleccionable. |
-| Vera | Oráculo de verificación | Verdad, pero que sea atractiva. |
+| Glyph | design gremlin | No hay vibraciones sin recibos. |
+| Mina | curador de museo | Hazlo específico. Hazlo coleccionable. |
+| Vera | oráculo de verificación | Verdad, pero que sea atractiva. |
 
 ```bash
 artifact whoami
 artifact config set agent_name vera
 ```
 
+## Opciones remotas
+
+Todos los comandos principales admiten `--remote` para analizar repositorios de GitHub sin una clonación local:
+
+```
+--remote <owner/repo>  Analyze a GitHub repo without cloning
+--ref <branch|tag|sha> Git ref for remote repos (default: default branch)
+--remote-refresh       Bypass remote cache, re-fetch all API data
+```
+
+Los resultados se almacenan en caché en `~/.artifact/repos/owner/repo/`. Requiere `GITHUB_TOKEN` para repositorios privados y límites de velocidad más altos.
+
 ## Modelo de amenazas
 
-- **Ollama es solo local.** Ningún dato sale de tu máquina. Se conecta solo a `localhost`.
-- **Sin telemetría.** No hay llamadas de red excepto a Ollama local.
+- **Ollama funciona solo localmente.** Ningún dato sale de su máquina. Se conecta únicamente a `localhost`.
+- **Sin telemetría.** Sin análisis. Sin envío de datos.
 - **Sin secretos.** No lee, almacena ni transmite credenciales.
-- **El historial es local.** `.artifact/` reside en el repositorio y está ignorado por Git por convención.
-- **El mecanismo de respaldo es determinista.** Si Ollama no está disponible, la salida se genera a partir de señales del repositorio: reproducible, no aleatoria.
-- **Ámbito de archivo:** lee los archivos de origen del repositorio y solo escribe en `.artifact/` y `~/.artifact/`.
+- **El historial es local.** La carpeta `.artifact/` se encuentra en el repositorio y, por convención, se ignora en Git.
+- **La opción de respaldo es determinista.** Si Ollama no está disponible, la salida se genera a partir de señales del repositorio, lo que la hace reproducible y no aleatoria.
+- **Ámbito de los archivos:** Lee los archivos fuente del repositorio y solo escribe en las carpetas `.artifact/` y `~/.artifact/`.
 
 ## Variables de entorno
 
 | Variable | Propósito |
 |----------|---------|
-| `OLLAMA_HOST` | Anula el punto de conexión de Ollama (por defecto: detección automática). |
+| `GITHUB_TOKEN` | Clave de acceso personal de GitHub para operaciones remotas, búsqueda y publicación (5000 solicitudes/hora frente a 60). |
+| `OLLAMA_HOST` | Permite sobrescribir el punto de acceso de Ollama (por defecto: detección automática). |
 | `ARTIFACT_OLLAMA_MODEL` | Fuerza el uso de un modelo específico de Ollama. |
 
 ## Licencia

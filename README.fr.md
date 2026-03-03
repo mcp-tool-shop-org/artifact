@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="README.fr.md">Français</a> | <a href="README.es.md">Español</a> | <a href="README.md">English</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.ja.md">日本語</a> | <a href="README.pt-BR.md">Português (BR)</a> | <a href="README.zh.md">中文</a>
+  <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.md">English</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
@@ -88,6 +88,24 @@ artifact ritual /path/to/repo
 | `config get [key]` | Lire les valeurs de configuration |
 | `config set <key> <value>` | Définir la configuration (par exemple, `agent_name`) |
 
+### Traitement par lots et publication
+
+| Commande | Fonctionnement |
+|---------|-------------|
+| `crawl --org <name>` | Curateur par lots de tous les dépôts d'une organisation GitHub. |
+| `crawl --from <file>` | Analyse des dépôts listés dans un fichier texte. |
+| `publish --pages-repo <o/r>` | Publication du catalogue sur GitHub Pages. |
+| `privacy` | Affichage des emplacements de stockage et de la politique de données. |
+| `reset --org\ | --cache\ | --all` | Suppression des données stockées (avec confirmation). |
+
+### Suivi des artefacts de construction
+
+| Commande | Fonctionnement |
+|---------|-------------|
+| `built add <repo> <path...>` | Association des chemins de fichiers des artefacts. |
+| `built ls [repo-name]` | Liste de l'état de construction. |
+| `built status <repo-name>` | Suivi détaillé pour un seul dépôt. |
+
 ## Options de vérification
 
 ```
@@ -135,19 +153,32 @@ artifact whoami
 artifact config set agent_name vera
 ```
 
+## Options de connexion à distance
+
+Toutes les commandes principales prennent en charge l'option `--remote` pour analyser les dépôts GitHub sans clonage local :
+
+```
+--remote <owner/repo>  Analyze a GitHub repo without cloning
+--ref <branch|tag|sha> Git ref for remote repos (default: default branch)
+--remote-refresh       Bypass remote cache, re-fetch all API data
+```
+
+Les résultats sont mis en cache dans `~/.artifact/repos/owner/repo/`. Nécessite `GITHUB_TOKEN` pour les dépôts privés et des limites de débit plus élevées.
+
 ## Modèle de menace
 
 - **Ollama est uniquement local.** Aucune donnée ne quitte votre machine. Se connecte uniquement à `localhost`.
-- **Pas de télémétrie.** Aucun appel réseau, sauf vers Ollama local.
+- **Pas de télémétrie.** Pas d'analyses. Pas de transmission de données.
 - **Pas de secrets.** Ne lit, ne stocke ni ne transmet d'informations d'identification.
-- **L'historique est local.** `.artifact/` se trouve dans le dépôt et est ignoré par Git par convention.
-- **Le repli est déterministe.** Si Ollama est indisponible, la sortie est générée à partir de données initiales provenant des signaux du dépôt, ce qui la rend reproductible et non aléatoire.
-- **Portée des fichiers :** lit les fichiers sources du dépôt, écrit uniquement dans `.artifact/` et `~/.artifact/`.
+- **L'historique est local.** Le dossier `.artifact/` se trouve dans le dépôt et est généralement ignoré par Git.
+- **La solution de repli est déterministe.** Si Ollama est indisponible, la sortie est générée à partir des informations du dépôt, ce qui est reproductible et non aléatoire.
+- **Portée des fichiers :** lit les fichiers sources du dépôt, écrit uniquement dans les dossiers `.artifact/` et `~/.artifact/`.
 
 ## Variables d'environnement
 
 | Variable | Fonction |
 |----------|---------|
+| `GITHUB_TOKEN` | Clé PAT GitHub pour les opérations à distance/l'analyse/la publication (5000 requêtes/heure contre 60). |
 | `OLLAMA_HOST` | Remplacer le point de terminaison Ollama (par défaut : détection automatique) |
 | `ARTIFACT_OLLAMA_MODEL` | Forcer un modèle Ollama spécifique |
 
