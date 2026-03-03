@@ -29,6 +29,7 @@ import * as org from './org.js';
 import * as blueprint from './blueprint.js';
 import { review } from './review.js';
 import { generateCatalog } from './catalog.js';
+import type { CatalogFormat } from './catalog.js';
 import type { RepoContext, RepoType, DecisionPacket, WebOptions } from './types.js';
 
 function usage(): never {
@@ -36,9 +37,10 @@ function usage(): never {
 
 Commands:
   drive [repo-path]           Run the Curator freshness driver.
+  ritual [repo-path]          Full ritual: drive + blueprint + review + catalog.
   blueprint [repo-path]       Generate Blueprint Pack from latest decision.
   review [repo-path]          Print a 4-block editorial review card (--json for JSON).
-  catalog [--all]              Generate season catalog (CATALOG.md + catalog.json).
+  catalog [--all] [--format]  Generate catalog (md or html).
   memory show [--org]         Show repo memory (or --org for org-level).
   memory forget <repo-name>   Forget all memory for a repo.
   memory prune <days>         Prune entries older than N days.
@@ -62,7 +64,15 @@ Drive options:
   --web-domains <csv>  Comma-separated domain allowlist.
   --web-refresh        Bypass cache, re-fetch all queries.
   --curate-org         Enable org-wide curation (season + bans + gaps).
-  --help               Show this help.`);
+  --help               Show this help.
+
+Catalog options:
+  --all                Include all entries (ignore active season filter).
+  --format <md|html>   Output format (default: md). html = gallery view.
+
+Ritual options:
+  Runs drive --curate-org --web --blueprint --review, then updates catalog.
+  Accepts all drive options plus --format for catalog output.`);
   return process.exit(1) as never;
 }
 
@@ -517,16 +527,70 @@ async function cmdReview(args: string[]): Promise<void> {
 
 async function cmdCatalog(args: string[]): Promise<void> {
   const all = args.includes('--all');
-  const result = await generateCatalog({ all });
+  const formatRaw = flagValue(args, '--format');
+  const format: CatalogFormat = formatRaw === 'html' ? 'html' : 'md';
+  const result = await generateCatalog({ all, format });
 
   console.error(`Catalog generated (${result.entry_count} entries):`);
   console.error(`  ${result.markdown_path}`);
   console.error(`  ${result.json_path}`);
+  if (result.html_path) {
+    console.error(`  ${result.html_path}`);
+  }
 
-  // Print markdown to stdout
+  // Print to stdout
   const { readFile: rf } = await import('node:fs/promises');
-  const md = await rf(result.markdown_path, 'utf-8');
-  console.log(md);
+  if (format === 'html' && result.html_path) {
+    const html = await rf(result.html_path, 'utf-8');
+    console.log(html);
+  } else {
+    const md = await rf(result.markdown_path, 'utf-8');
+    console.log(md);
+  }
+}
+
+// ── Ritual command ──────────────────────────────────────────────
+
+async function cmdRitual(args: string[]): Promise<void> {
+  // Ritual = drive --curate-org --web --blueprint --review + catalog update
+  const driveArgs = [...args];
+
+  // Inject ritual defaults if not already present
+  if (!driveArgs.includes('--curate-org')) driveArgs.push('--curate-org');
+  if (!driveArgs.includes('--web')) driveArgs.push('--web');
+  if (!driveArgs.includes('--blueprint')) driveArgs.push('--blueprint');
+  if (!driveArgs.includes('--review')) driveArgs.push('--review');
+
+  // Extract catalog format preference
+  const formatRaw = flagValue(args, '--format');
+  const catalogFormat: CatalogFormat = formatRaw === 'html' ? 'html' : 'md';
+
+  // Run the drive
+  await cmdDrive(driveArgs);
+
+  // Update catalog
+  console.error('');
+  console.error('--- Catalog Update ---');
+  const catalogResult = await generateCatalog({ all: true, format: catalogFormat });
+  console.error(`Catalog: ${catalogResult.entry_count} entries`);
+  console.error(`  ${catalogResult.markdown_path}`);
+  if (catalogResult.html_path) {
+    console.error(`  ${catalogResult.html_path}`);
+  }
+
+  // Suggest next repo based on gaps
+  const status = await org.computeStatus();
+  const gaps = status.gaps.filter(g => g.startsWith('prefer '));
+  if (gaps.length > 0) {
+    console.error('');
+    console.error('--- Next Suggested ---');
+    for (const g of gaps) {
+      console.error(`  ${g}`);
+    }
+  }
+
+  console.error('');
+  console.error(`Diversity: ${status.diversity_score}/100`);
 }
 
 // ── Main router ─────────────────────────────────────────────────
@@ -539,6 +603,8 @@ async function main(): Promise<void> {
 
   if (cmd === 'drive') {
     await cmdDrive(args.slice(1));
+  } else if (cmd === 'ritual') {
+    await cmdRitual(args.slice(1));
   } else if (cmd === 'blueprint') {
     await cmdBlueprint(args.slice(1));
   } else if (cmd === 'review') {
