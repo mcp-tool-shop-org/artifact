@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-03-03
+
+### Added
+
+- Phase 20: Productization + Trust + Adoption
+- `artifact reset --org|--cache|--all` — controllable data deletion with confirmation
+- `docs/PLAYBOOKS.md` — 3 adoption workflows (org crawl, single repo ritual, seasonal curation)
+- Phase 19: 45 new tests (70 total) across 8 test files
+- Constants extraction (`src/constants.ts`) to fix `node --test` hang on Windows
+- `--test-timeout=15000` for CI robustness
+
+### Changed
+
+- `artifact privacy` now references `artifact reset` instead of raw `rm -rf` commands
+- README updated with Batch & Publishing, Built Tracking, Remote Options sections
+
 ## [1.4.0] - 2026-03-03
 
 ### Added

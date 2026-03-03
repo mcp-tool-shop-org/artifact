@@ -24,7 +24,8 @@
  */
 
 import { resolve, basename, dirname, join } from 'node:path';
-import { readFile, writeFile, mkdir, unlink, readdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink, readdir, rm } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import { existsSync } from 'node:fs';
 import { connect } from './ollama.js';
 import { drive as curatorDrive } from './curator.js';
@@ -95,6 +96,7 @@ Commands:
   crawl [options]             Batch-curate multiple repos.
   publish [options]           Push catalog to a GitHub Pages repo.
   privacy                    Show storage locations + data policy.
+  reset --org|--cache|--all   Delete stored data (with confirmation).
   built add <repo> <path...>  Attach artifact file paths to tracking.
   built ls [repo-name]        List built status (all or one repo).
   built status <repo-name>    Detailed tracking for one repo.
@@ -1074,8 +1076,82 @@ Network (only when explicitly invoked):
 
 No telemetry. No analytics. No phone-home.
 
-To delete all data:  rm -rf ~/.artifact/
-To delete cache:     rm -rf ~/.artifact/cache/`);
+To delete org data:  artifact reset --org
+To delete cache:     artifact reset --cache
+To delete all data:  artifact reset --all`);
+}
+
+// ── Reset command ──────────────────────────────────────────────
+
+async function confirmPrompt(message: string, requireYes = false): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise(resolve => {
+    rl.question(message, answer => {
+      rl.close();
+      const a = answer.trim().toLowerCase();
+      resolve(requireYes ? a === 'yes' : a === 'y' || a === 'yes');
+    });
+  });
+}
+
+async function cmdReset(args: string[]): Promise<void> {
+  const doOrg = args.includes('--org');
+  const doCache = args.includes('--cache');
+  const doAll = args.includes('--all');
+  const skipConfirm = args.includes('--yes');
+
+  if (!doOrg && !doCache && !doAll) {
+    console.error(`Usage: artifact reset --org|--cache|--all [--yes]
+
+  --org     Delete org data (ledger, catalog, status, publish, built)
+            Path: ~/.artifact/org/
+  --cache   Delete API response cache
+            Path: ~/.artifact/cache/
+  --all     Delete ALL artifact data (config, org, repos, cache)
+            Path: ~/.artifact/
+  --yes     Skip confirmation prompt`);
+    return;
+  }
+
+  const home = resolve(homedir(), '.artifact');
+  const targets: Array<{ label: string; path: string }> = [];
+
+  if (doAll) {
+    targets.push({ label: 'all data', path: home });
+  } else {
+    if (doOrg) targets.push({ label: 'org data', path: resolve(home, 'org') });
+    if (doCache) targets.push({ label: 'cache', path: resolve(home, 'cache') });
+  }
+
+  // Show what will be deleted
+  console.error('The following will be permanently deleted:');
+  for (const t of targets) {
+    const exists = existsSync(t.path);
+    console.error(`  ${t.path} ${exists ? '' : '(not found)'}`);
+  }
+
+  if (!skipConfirm) {
+    const prompt = doAll
+      ? '\nType "yes" to confirm: '
+      : '\nConfirm? (y/N): ';
+    const confirmed = await confirmPrompt(prompt, doAll);
+    if (!confirmed) {
+      console.error('Cancelled.');
+      return;
+    }
+  }
+
+  for (const t of targets) {
+    if (!existsSync(t.path)) continue;
+    await rm(t.path, { recursive: true, force: true });
+    console.error(`  Deleted ${t.label}.`);
+  }
+
+  if (doAll) {
+    console.error('\nDone. Run "artifact init" to start fresh.');
+  } else {
+    console.error('\nDone.');
+  }
 }
 
 // ── Publish command ─────────────────────────────────────────────
@@ -1271,6 +1347,8 @@ async function main(): Promise<void> {
     await cmdPublish(args.slice(1));
   } else if (cmd === 'privacy') {
     cmdPrivacy();
+  } else if (cmd === 'reset') {
+    await cmdReset(args.slice(1));
   } else if (cmd === 'memory') {
     const subCmd = args[1];
     if (subCmd === 'show') {

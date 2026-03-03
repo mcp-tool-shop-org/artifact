@@ -88,6 +88,24 @@ artifact ritual /path/to/repo
 | `config get [key]` | Read config values |
 | `config set <key> <value>` | Set config (e.g., `agent_name`) |
 
+### Batch & Publishing
+
+| Command | What it does |
+|---------|-------------|
+| `crawl --org <name>` | Batch-curate all repos in a GitHub org |
+| `crawl --from <file>` | Crawl repos listed in a text file |
+| `publish --pages-repo <o/r>` | Push catalog to GitHub Pages |
+| `privacy` | Show storage locations + data policy |
+| `reset --org\|--cache\|--all` | Delete stored data (with confirmation) |
+
+### Built Artifact Tracking
+
+| Command | What it does |
+|---------|-------------|
+| `built add <repo> <path...>` | Attach artifact file paths |
+| `built ls [repo-name]` | List built status |
+| `built status <repo-name>` | Detailed tracking for one repo |
+
 ## Drive Options
 
 ```
@@ -135,10 +153,22 @@ artifact whoami
 artifact config set agent_name vera
 ```
 
+## Remote Options
+
+All core commands support `--remote` for analyzing GitHub repos without a local clone:
+
+```
+--remote <owner/repo>  Analyze a GitHub repo without cloning
+--ref <branch|tag|sha> Git ref for remote repos (default: default branch)
+--remote-refresh       Bypass remote cache, re-fetch all API data
+```
+
+Results are cached at `~/.artifact/repos/owner/repo/`. Requires `GITHUB_TOKEN` for private repos and higher rate limits.
+
 ## Threat Model
 
 - **Ollama is local-only.** No data leaves your machine. Connects to `localhost` only.
-- **No telemetry.** No network calls except to local Ollama.
+- **No telemetry.** No analytics. No phone-home.
 - **No secrets.** Does not read, store, or transmit credentials.
 - **History is local.** `.artifact/` lives in the repo, gitignored by convention.
 - **Fallback is deterministic.** If Ollama is down, output is seeded from repo signals — reproducible, not random.
@@ -148,6 +178,7 @@ artifact config set agent_name vera
 
 | Variable | Purpose |
 |----------|---------|
+| `GITHUB_TOKEN` | GitHub PAT for remote/crawl/publish (5000 req/hr vs 60) |
 | `OLLAMA_HOST` | Override Ollama endpoint (default: auto-detect) |
 | `ARTIFACT_OLLAMA_MODEL` | Force a specific Ollama model |
 
