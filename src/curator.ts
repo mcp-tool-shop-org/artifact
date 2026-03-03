@@ -1,13 +1,13 @@
 /**
  * Curator — the Ollama-powered freshness driver.
- * Reads repo context + history, returns a structured decision packet.
- * No conversation. JSON only.
+ * Reads repo context (with TruthBundle) + history, returns a grounded decision packet.
+ * No conversation. JSON only. All hooks must trace to truth atoms.
  */
 
 import type { OllamaConnection } from './ollama.js';
 import { generate } from './ollama.js';
-import type { DecisionPacket, RepoContext, HistoryStore, FreshnessPayload, Tier } from './types.js';
-import { recentTiers, recentFormats, recentConstraints } from './history.js';
+import type { DecisionPacket, RepoContext, HistoryStore, FreshnessPayload, Tier, TruthAtom, SelectedHook } from './types.js';
+import { recentTiers, recentFormats, recentConstraints, recentAtomIds } from './history.js';
 
 const TIERS: Tier[] = ['Exec', 'Dev', 'Creator', 'Fun', 'Promotion'];
 
@@ -19,23 +19,45 @@ const FORMAT_FAMILIES: Record<Tier, string[]> = {
   Promotion: ['P1_one_slide_pitch', 'P2_demo_gif_storyboard', 'P3_launch_post_kit', 'P4_before_after_proof', 'P5_screenshot_story', 'P6_comparison_chart', 'P7_faq_skeptics', 'P8_demo_script', 'P9_boilerplate_tagline', 'P10_presskit_checklist'],
 };
 
+/** Format truth atoms for the Curator prompt — compact, citeable */
+function formatAtoms(atoms: TruthAtom[]): string {
+  if (atoms.length === 0) return 'No truth atoms extracted. Use placeholder hooks.';
+
+  const grouped = new Map<string, TruthAtom[]>();
+  for (const atom of atoms) {
+    const list = grouped.get(atom.type) ?? [];
+    list.push(atom);
+    grouped.set(atom.type, list);
+  }
+
+  const sections: string[] = [];
+  for (const [type, list] of grouped) {
+    const items = list.map(a => `  [${a.id}] "${a.value}" (${a.source.file}:${a.source.lineStart})`);
+    sections.push(`${type}:\n${items.join('\n')}`);
+  }
+  return sections.join('\n\n');
+}
+
 function buildPrompt(ctx: RepoContext, history: HistoryStore): string {
   const usedTiers = recentTiers(history);
   const usedFormats = recentFormats(history);
   const usedConstraints = recentConstraints(history);
+  const usedAtoms = recentAtomIds(history);
 
   const tiersAvail = TIERS.map(t => `${t}${usedTiers.includes(t) ? ' (used recently)' : ''}`).join(', ');
-
-  const truthSection = ctx.truth_atoms.length > 0
-    ? `Truth atoms from this repo:\n${ctx.truth_atoms.map(a => `- ${a}`).join('\n')}`
-    : 'No truth atoms extracted yet. Use placeholder hooks that Phase 2 can fill.';
+  const atomsSection = formatAtoms(ctx.truth_bundle.atoms);
 
   return `You are the Curator — a silent freshness enforcement system for artifact selection.
 You MUST respond with ONLY a JSON object. No markdown, no explanation, no prose.
 
 REPO: "${ctx.repo_name}"
 REPO TYPE: ${ctx.repo_type}
-${truthSection}
+
+=== TRUTH ATOMS (grounded facts from this repo) ===
+${atomsSection}
+
+=== RECENTLY USED ATOM IDs (avoid repeating) ===
+${usedAtoms.length > 0 ? usedAtoms.join(', ') : 'none'}
 
 AVAILABLE TIERS: ${tiersAvail}
 RECENTLY USED FORMATS (avoid): ${usedFormats.length > 0 ? usedFormats.join(', ') : 'none'}
@@ -56,7 +78,11 @@ YOUR JOB:
 3. Pick 2-3 constraints from different decks
 4. List 3-5 must_include requirements that force repo-specificity
 5. List 0-5 ban_list items (formats/motifs to avoid this run)
-6. Provide a freshness_payload with three fields: weird_detail, recent_change, sharp_edge (use actual repo facts if truth_atoms exist, otherwise use "unknown — Phase 2 will extract")
+6. Select 2-4 hooks from the truth atoms. Each hook MUST reference an atom ID.
+7. For freshness_payload, use REAL facts from the truth atoms:
+   - weird_detail: pick the most surprising/specific invariant, error, or constraint atom
+   - recent_change: pick a recent_change atom (or "unknown" if none exist)
+   - sharp_edge: pick a sharp_edge or anti_goal atom (or "unknown" if none exist)
 
 RESPOND WITH ONLY THIS JSON (no markdown fences, no text outside):
 {
@@ -65,6 +91,10 @@ RESPOND WITH ONLY THIS JSON (no markdown fences, no text outside):
   "constraints": ["...", "..."],
   "must_include": ["...", "..."],
   "ban_list": ["..."],
+  "selected_hooks": [
+    { "atom_id": "...", "role": "name_hook" },
+    { "atom_id": "...", "role": "invariant_hook" }
+  ],
   "freshness_payload": {
     "weird_detail": "...",
     "recent_change": "...",
@@ -79,17 +109,15 @@ interface CuratorResponse {
   constraints?: string[];
   must_include?: string[];
   ban_list?: string[];
+  selected_hooks?: Array<{ atom_id?: string; role?: string }>;
   freshness_payload?: Partial<FreshnessPayload>;
 }
 
 function parseResponse(raw: string): CuratorResponse | null {
-  // Strip markdown fences if the model wraps them anyway
   let cleaned = raw.trim();
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
   }
-
-  // Find the first { and last }
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start === -1 || end === -1) return null;
@@ -103,7 +131,7 @@ function parseResponse(raw: string): CuratorResponse | null {
 
 function validateTier(t: unknown): Tier {
   if (typeof t === 'string' && TIERS.includes(t as Tier)) return t as Tier;
-  return 'Fun'; // safe default
+  return 'Fun';
 }
 
 function validateFormats(candidates: unknown, tier: Tier): string[] {
@@ -118,18 +146,44 @@ function validateStringArray(arr: unknown, fallback: string[]): string[] {
   return arr.filter((s): s is string => typeof s === 'string' && s.length > 0);
 }
 
-function validatePayload(p: unknown): FreshnessPayload {
-  const defaults: FreshnessPayload = {
-    weird_detail: 'unknown — Phase 2 will extract',
-    recent_change: 'unknown — Phase 2 will extract',
-    sharp_edge: 'unknown — Phase 2 will extract',
+/** Validate selected_hooks — must reference real atom IDs */
+function validateHooks(hooks: unknown, atoms: TruthAtom[]): SelectedHook[] {
+  if (!Array.isArray(hooks)) return [];
+  const atomIds = new Set(atoms.map(a => a.id));
+
+  return hooks
+    .filter((h): h is { atom_id: string; role: string } =>
+      typeof h === 'object' && h !== null &&
+      typeof (h as Record<string, unknown>).atom_id === 'string' &&
+      typeof (h as Record<string, unknown>).role === 'string')
+    .filter(h => atomIds.has(h.atom_id))
+    .slice(0, 4);
+}
+
+/** Resolve a value — if it looks like an atom ID, look up the atom's value */
+function resolveValue(val: string | undefined, atoms: TruthAtom[]): string | undefined {
+  if (!val || val === 'unknown') return undefined;
+  // Check if the Curator returned an atom ID instead of a value
+  const atom = atoms.find(a => a.id === val);
+  if (atom) return atom.value;
+  return val;
+}
+
+/** Build freshness payload from atoms — prefer real data, fall back gracefully */
+function buildFreshnessPayload(parsed: Partial<FreshnessPayload> | undefined, atoms: TruthAtom[]): FreshnessPayload {
+  const fallback = (type: string, label: string): string => {
+    const atom = atoms.find(a => a.type === type);
+    return atom ? atom.value : `unknown — no ${label} atoms found`;
   };
-  if (!p || typeof p !== 'object') return defaults;
-  const obj = p as Partial<FreshnessPayload>;
+
+  const weird = resolveValue(parsed?.weird_detail, atoms);
+  const change = resolveValue(parsed?.recent_change, atoms);
+  const edge = resolveValue(parsed?.sharp_edge, atoms);
+
   return {
-    weird_detail: typeof obj.weird_detail === 'string' && obj.weird_detail ? obj.weird_detail : defaults.weird_detail,
-    recent_change: typeof obj.recent_change === 'string' && obj.recent_change ? obj.recent_change : defaults.recent_change,
-    sharp_edge: typeof obj.sharp_edge === 'string' && obj.sharp_edge ? obj.sharp_edge : defaults.sharp_edge,
+    weird_detail: weird ?? fallback('invariant', 'invariant'),
+    recent_change: change ?? fallback('recent_change', 'recent_change'),
+    sharp_edge: edge ?? fallback('sharp_edge', 'sharp_edge'),
   };
 }
 
@@ -147,6 +201,8 @@ export async function drive(
   if (!parsed) return null;
 
   const tier = validateTier(parsed.tier);
+  const selectedHooks = validateHooks(parsed.selected_hooks, ctx.truth_bundle.atoms);
+
   return {
     repo_name: ctx.repo_name,
     tier,
@@ -154,7 +210,8 @@ export async function drive(
     constraints: validateStringArray(parsed.constraints, ['monospace-only', 'uses-failure-mode']),
     must_include: validateStringArray(parsed.must_include, ['one repo-specific invariant', 'one concrete command or flag', 'one failure mode']),
     ban_list: validateStringArray(parsed.ban_list, []),
-    freshness_payload: validatePayload(parsed.freshness_payload),
+    freshness_payload: buildFreshnessPayload(parsed.freshness_payload, ctx.truth_bundle.atoms),
+    selected_hooks: selectedHooks,
     driver_meta: {
       host: conn.host,
       model: conn.model,

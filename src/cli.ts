@@ -4,15 +4,16 @@
  * artifact drive [repo-path]
  *
  * Runs the Curator freshness driver against a repo.
+ * Phase 2: extracts truth atoms, grounds all decisions in repo facts.
  * Outputs .artifact/decision_packet.json.
  */
 
 import { resolve, basename } from 'node:path';
-import { writeFile, mkdir, readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { writeFile, mkdir } from 'node:fs/promises';
 import { connect } from './ollama.js';
 import { drive as curatorDrive } from './curator.js';
 import { driveFallback } from './fallback.js';
+import { extractTruthBundle } from './truth.js';
 import * as history from './history.js';
 import type { RepoContext, RepoType, DecisionPacket } from './types.js';
 
@@ -28,54 +29,6 @@ Options:
   --type <type>  Repo type (R1_tooling_cli, R2_library_sdk, etc.). Default: unknown.
   --help         Show this help.`);
   return process.exit(1) as never;
-}
-
-/** Try to extract truth atoms from package.json if present. Phase 1 minimal extraction. */
-async function extractBasicAtoms(repoPath: string, repoName: string): Promise<string[]> {
-  const atoms: string[] = [];
-
-  // package.json
-  const pkgPath = resolve(repoPath, 'package.json');
-  if (existsSync(pkgPath)) {
-    try {
-      const raw = await readFile(pkgPath, 'utf-8');
-      const pkg = JSON.parse(raw) as Record<string, unknown>;
-      if (typeof pkg.description === 'string' && pkg.description) {
-        atoms.push(`description: ${pkg.description}`);
-      }
-      if (typeof pkg.name === 'string') {
-        atoms.push(`package name: ${pkg.name}`);
-      }
-      if (pkg.bin && typeof pkg.bin === 'object') {
-        const cmds = Object.keys(pkg.bin);
-        atoms.push(`CLI commands: ${cmds.join(', ')}`);
-      }
-      if (Array.isArray(pkg.keywords) && pkg.keywords.length > 0) {
-        atoms.push(`keywords: ${pkg.keywords.join(', ')}`);
-      }
-    } catch { /* ignore */ }
-  }
-
-  // pyproject.toml — just check existence
-  if (existsSync(resolve(repoPath, 'pyproject.toml'))) {
-    atoms.push('Python project (pyproject.toml present)');
-  }
-
-  // README.md first line
-  const readmePath = resolve(repoPath, 'README.md');
-  if (existsSync(readmePath)) {
-    try {
-      const raw = await readFile(readmePath, 'utf-8');
-      const firstLine = raw.split('\n').find((l: string) => l.trim().length > 0);
-      if (firstLine) atoms.push(`README first line: ${firstLine.trim().slice(0, 120)}`);
-    } catch { /* ignore */ }
-  }
-
-  if (atoms.length === 0) {
-    atoms.push(`repo name: ${repoName}`);
-  }
-
-  return atoms;
 }
 
 async function main(): Promise<void> {
@@ -97,13 +50,15 @@ async function main(): Promise<void> {
   const repoPath = resolve(positional[0] ?? '.');
   const repoName = basename(repoPath);
 
-  // Extract basic truth atoms (Phase 1)
-  const truthAtoms = await extractBasicAtoms(repoPath, repoName);
+  // Extract truth atoms (Phase 2)
+  const truthBundle = await extractTruthBundle(repoPath);
+  const typeStats = Object.entries(truthBundle.stats.atoms_by_type).map(([t, n]) => `${t}:${n}`).join(', ');
+  console.error(`Truth: ${truthBundle.atoms.length} atoms from ${truthBundle.stats.scanned_files} files (${typeStats})`);
 
   const ctx: RepoContext = {
     repo_name: repoName,
     repo_type: repoType,
-    truth_atoms: truthAtoms,
+    truth_bundle: truthBundle,
   };
 
   // Load history
@@ -115,7 +70,6 @@ async function main(): Promise<void> {
     console.error('Curator: skipped (--no-curator)');
     packet = driveFallback(ctx, store);
   } else {
-    // Try Ollama
     const conn = await connect();
     if (conn) {
       console.error(`Curator: online (model=${conn.model})`);
@@ -138,12 +92,13 @@ async function main(): Promise<void> {
   const outPath = resolve(outDir, 'decision_packet.json');
   await writeFile(outPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
 
-  // Append to history
+  // Append to history (including atom IDs used)
   await history.append(repoPath, {
     repo_name: packet.repo_name,
     tier: packet.tier,
     formats: packet.format_candidates,
     constraints: packet.constraints,
+    atom_ids_used: packet.selected_hooks.map(h => h.atom_id),
     timestamp: packet.driver_meta.timestamp,
   });
 

@@ -38,6 +38,55 @@ export interface DriverMeta {
   timestamp: string;
 }
 
+// ── Truth Atom types (Phase 2) ──────────────────────────────────
+
+/** What kind of fact this atom represents */
+export type AtomType =
+  // Repo identity
+  | 'repo_tagline'
+  | 'core_purpose'
+  | 'core_object'
+  // Mechanics & constraints
+  | 'invariant'
+  | 'guarantee'
+  | 'anti_goal'
+  // Developer reality
+  | 'cli_command'
+  | 'cli_flag'
+  | 'error_string'
+  | 'config_key'
+  // Freshness
+  | 'recent_change'
+  | 'sharp_edge';
+
+/** Where in the repo this atom was found */
+export interface AtomSource {
+  file: string;
+  lineStart: number;
+  lineEnd: number;
+}
+
+/** A single grounded fact extracted from the repo */
+export interface TruthAtom {
+  id: string;
+  type: AtomType;
+  value: string;
+  confidence: number;
+  source: AtomSource;
+  tags: string[];
+}
+
+/** The full extraction result */
+export interface TruthBundle {
+  atoms: TruthAtom[];
+  stats: {
+    scanned_files: number;
+    atoms_by_type: Record<string, number>;
+  };
+}
+
+// ── Decision packet + context ───────────────────────────────────
+
 /** The decision packet — the only output that matters */
 export interface DecisionPacket {
   repo_name: string;
@@ -47,7 +96,14 @@ export interface DecisionPacket {
   must_include: string[];
   ban_list: string[];
   freshness_payload: FreshnessPayload;
+  selected_hooks: SelectedHook[];
   driver_meta: DriverMeta;
+}
+
+/** A hook chosen by the Curator, traced back to an atom */
+export interface SelectedHook {
+  atom_id: string;
+  role: string;
 }
 
 /** History entry — appended after each successful run */
@@ -56,6 +112,7 @@ export interface HistoryEntry {
   tier: Tier;
   formats: string[];
   constraints: string[];
+  atom_ids_used: string[];
   timestamp: string;
 }
 
@@ -68,5 +125,5 @@ export interface HistoryStore {
 export interface RepoContext {
   repo_name: string;
   repo_type: RepoType;
-  truth_atoms: string[];
+  truth_bundle: TruthBundle;
 }

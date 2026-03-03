@@ -53,3 +53,8 @@ export function recentFormats(store: HistoryStore, n = 5): string[] {
 export function recentConstraints(store: HistoryStore, n = 5): string[] {
   return store.entries.slice(-n).flatMap(e => e.constraints);
 }
+
+/** Get recently used atom IDs (last N entries, flattened). */
+export function recentAtomIds(store: HistoryStore, n = 5): string[] {
+  return store.entries.slice(-n).flatMap(e => e.atom_ids_used ?? []);
+}
