@@ -320,11 +320,12 @@ export async function verifyArtifact(
   repoPath: string,
   artifactPath: string,
   opts?: { record?: boolean },
+  outputDir?: string,
 ): Promise<VerifyResult | null> {
-  const packet = await loadPacket(repoPath);
+  const packet = await loadPacket(repoPath, outputDir);
   if (!packet) return null;
 
-  const truthBundle = await loadTruthBundle(repoPath);
+  const truthBundle = await loadTruthBundle(repoPath, outputDir);
   const atoms = truthBundle?.atoms ?? [];
 
   let artifactText: string;

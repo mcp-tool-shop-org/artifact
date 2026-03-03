@@ -335,11 +335,11 @@ export interface BuildpackResult {
  * Generate a builder prompt packet from the latest decision + truth bundle.
  * Returns null if no decision packet exists at the repo path.
  */
-export async function buildpack(repoPath: string): Promise<BuildpackResult | null> {
-  const packet = await loadPacket(repoPath);
+export async function buildpack(repoPath: string, outputDir?: string): Promise<BuildpackResult | null> {
+  const packet = await loadPacket(repoPath, outputDir);
   if (!packet) return null;
 
-  const truthBundle = await loadTruthBundle(repoPath);
+  const truthBundle = await loadTruthBundle(repoPath, outputDir);
   const atoms = truthBundle?.atoms ?? [];
 
   const text = await buildPromptPacket(packet, atoms);

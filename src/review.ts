@@ -285,11 +285,11 @@ export interface ReviewResult {
  * Generate a review card from the latest decision packet.
  * Returns the card (text + json + violations), or null if no packet exists.
  */
-export async function review(repoPath: string): Promise<ReviewResult | null> {
-  const packet = await loadPacket(repoPath);
+export async function review(repoPath: string, outputDir?: string): Promise<ReviewResult | null> {
+  const packet = await loadPacket(repoPath, outputDir);
   if (!packet) return null;
 
-  const truthBundle = await loadTruthBundle(repoPath);
+  const truthBundle = await loadTruthBundle(repoPath, outputDir);
   const atoms = truthBundle?.atoms ?? [];
 
   return await buildReviewCard(packet, atoms);

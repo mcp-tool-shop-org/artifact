@@ -56,7 +56,8 @@ function orgPath(): string {
   return join(ORG_DIR, ORG_FILE);
 }
 
-function repoMemoryPath(repoRoot: string): string {
+function repoMemoryPath(repoRoot: string, outputDir?: string): string {
+  if (outputDir) return join(outputDir, REPO_FILE);
   return join(repoRoot, REPO_DIR, REPO_FILE);
 }
 
@@ -116,8 +117,8 @@ export async function loadOrg(): Promise<MemoryStore> {
 }
 
 /** Load repo-level memory */
-export async function loadRepo(repoRoot: string): Promise<MemoryStore> {
-  return loadStore(repoMemoryPath(repoRoot));
+export async function loadRepo(repoRoot: string, outputDir?: string): Promise<MemoryStore> {
+  return loadStore(repoMemoryPath(repoRoot, outputDir));
 }
 
 /** Write an entry to the appropriate store */
@@ -125,6 +126,7 @@ export async function write(
   entry: Omit<MemoryEntry, 'id' | 'created_at'>,
   repoRoot?: string,
   ollamaHost?: string,
+  outputDir?: string,
 ): Promise<MemoryEntry> {
   const now = new Date().toISOString();
   const full: MemoryEntry = {
@@ -147,9 +149,9 @@ export async function write(
     store.entries.push(full);
     await saveStore(orgPath(), store);
   } else if (repoRoot) {
-    const store = await loadRepo(repoRoot);
+    const store = await loadRepo(repoRoot, outputDir);
     store.entries.push(full);
-    await saveStore(repoMemoryPath(repoRoot), store);
+    await saveStore(repoMemoryPath(repoRoot, outputDir), store);
   }
 
   return full;
@@ -176,6 +178,7 @@ export async function writePacket(
   packet: DecisionPacket,
   repoRoot: string,
   ollamaHost?: string,
+  outputDir?: string,
 ): Promise<void> {
   const content = packetToContent(packet);
 
@@ -188,7 +191,7 @@ export async function writePacket(
     data: packet,
     embedding: null,
     tags: [packet.tier, ...packet.format_candidates, ...packet.constraints],
-  }, repoRoot, ollamaHost);
+  }, repoRoot, ollamaHost, outputDir);
 
   // Org memory — compact summary (for cross-repo variety tracking)
   await write({
@@ -252,9 +255,10 @@ export async function buildMemoryBrief(
   repoName: string,
   query: string,
   ollamaHost?: string,
+  outputDir?: string,
 ): Promise<MemoryBrief> {
   const orgStore = await loadOrg();
-  const repoStore = await loadRepo(repoRoot);
+  const repoStore = await loadRepo(repoRoot, outputDir);
 
   const searchOpts: SearchOptions = { query, topK: 3, ollamaHost };
 
@@ -296,9 +300,9 @@ export async function buildMemoryBrief(
 // ── CLI helpers ─────────────────────────────────────────────────
 
 /** Show all entries for a given scope/repo */
-export async function show(repoRoot?: string): Promise<MemoryEntry[]> {
+export async function show(repoRoot?: string, outputDir?: string): Promise<MemoryEntry[]> {
   if (repoRoot) {
-    const store = await loadRepo(repoRoot);
+    const store = await loadRepo(repoRoot, outputDir);
     return store.entries;
   }
   const store = await loadOrg();
@@ -306,7 +310,7 @@ export async function show(repoRoot?: string): Promise<MemoryEntry[]> {
 }
 
 /** Forget all entries for a specific repo (from both org and repo stores) */
-export async function forget(repoName: string, repoRoot?: string): Promise<number> {
+export async function forget(repoName: string, repoRoot?: string, outputDir?: string): Promise<number> {
   let removed = 0;
 
   // Clean org memory
@@ -318,9 +322,9 @@ export async function forget(repoName: string, repoRoot?: string): Promise<numbe
 
   // Clean repo memory
   if (repoRoot) {
-    const memPath = repoMemoryPath(repoRoot);
+    const memPath = repoMemoryPath(repoRoot, outputDir);
     if (existsSync(memPath)) {
-      const repoStore = await loadRepo(repoRoot);
+      const repoStore = await loadRepo(repoRoot, outputDir);
       removed += repoStore.entries.length;
       await rm(memPath);
     }

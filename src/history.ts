@@ -16,9 +16,10 @@ function historyPath(repoRoot: string): string {
 }
 
 /** Load history from .artifact/history.json. Returns empty store if missing. */
-export async function load(repoRoot: string): Promise<HistoryStore> {
+export async function load(repoRoot: string, outputDir?: string): Promise<HistoryStore> {
+  const path = outputDir ? join(outputDir, HISTORY_FILE) : historyPath(repoRoot);
   try {
-    const raw = await readFile(historyPath(repoRoot), 'utf-8');
+    const raw = await readFile(path, 'utf-8');
     const parsed = JSON.parse(raw) as HistoryStore;
     if (Array.isArray(parsed.entries)) return parsed;
     return { entries: [] };
@@ -28,15 +29,16 @@ export async function load(repoRoot: string): Promise<HistoryStore> {
 }
 
 /** Append an entry and trim to MAX_ENTRIES. Writes to disk. */
-export async function append(repoRoot: string, entry: HistoryEntry): Promise<void> {
-  const store = await load(repoRoot);
+export async function append(repoRoot: string, entry: HistoryEntry, outputDir?: string): Promise<void> {
+  const store = await load(repoRoot, outputDir);
   store.entries.push(entry);
   if (store.entries.length > MAX_ENTRIES) {
     store.entries = store.entries.slice(-MAX_ENTRIES);
   }
-  const dir = join(repoRoot, HISTORY_DIR);
+  const dir = outputDir ?? join(repoRoot, HISTORY_DIR);
   await mkdir(dir, { recursive: true });
-  await writeFile(historyPath(repoRoot), JSON.stringify(store, null, 2) + '\n', 'utf-8');
+  const path = outputDir ? join(outputDir, HISTORY_FILE) : historyPath(repoRoot);
+  await writeFile(path, JSON.stringify(store, null, 2) + '\n', 'utf-8');
 }
 
 /** Get recently used tiers (last N). */

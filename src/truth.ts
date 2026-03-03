@@ -4,16 +4,18 @@
  * Scans repo files and extracts grounded, citeable facts.
  * Everything is deterministic — no LLM calls.
  * Every atom has a source pointer (file + line range).
+ *
+ * Phase 15: accepts a RepoSource abstraction so extraction
+ * works against local filesystems OR the GitHub API.
  */
 
-import { readFile, readdir, stat } from 'node:fs/promises';
-import { join, relative, extname, basename } from 'node:path';
+import { basename, extname } from 'node:path';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import type { TruthAtom, TruthBundle, AtomType, AtomSource } from './types.js';
+import type { TruthAtom, TruthBundle, AtomType } from './types.js';
+import type { RepoSource } from './source.js';
+import { LocalRepoSource } from './source.js';
 
 const MAX_ATOMS_PER_TYPE = 10;
-const MAX_FILE_SIZE = 256 * 1024; // 256KB — skip huge files
 const SOURCE_EXTENSIONS = new Set(['.ts', '.js', '.py', '.rs', '.go', '.cs', '.java', '.sh']);
 
 // Generic nouns to filter out of core_objects
@@ -55,26 +57,23 @@ function makeAtom(
   };
 }
 
-/** Read a file if it exists and is under size cap. Returns lines + raw. */
-async function safeRead(path: string): Promise<{ lines: string[]; raw: string } | null> {
-  if (!existsSync(path)) return null;
-  try {
-    const st = await stat(path);
-    if (st.size > MAX_FILE_SIZE) return null;
-    const raw = await readFile(path, 'utf-8');
-    return { lines: raw.split('\n'), raw };
-  } catch {
-    return null;
-  }
+/** Read a file via RepoSource. Returns lines + raw, or null. */
+async function safeRead(
+  source: RepoSource,
+  relativePath: string,
+): Promise<{ lines: string[]; raw: string } | null> {
+  const raw = await source.readFile(relativePath);
+  if (raw === null) return null;
+  return { lines: raw.split('\n'), raw };
 }
 
 // ── Extractors ──────────────────────────────────────────────────
 
 /** Extract from package.json */
-async function extractPackageJson(repoPath: string): Promise<TruthAtom[]> {
+async function extractPackageJson(source: RepoSource): Promise<TruthAtom[]> {
   const atoms: TruthAtom[] = [];
   const file = 'package.json';
-  const data = await safeRead(join(repoPath, file));
+  const data = await safeRead(source, file);
   if (!data) return atoms;
 
   try {
@@ -111,10 +110,10 @@ async function extractPackageJson(repoPath: string): Promise<TruthAtom[]> {
 }
 
 /** Extract from pyproject.toml (basic regex — no toml parser needed) */
-async function extractPyproject(repoPath: string): Promise<TruthAtom[]> {
+async function extractPyproject(source: RepoSource): Promise<TruthAtom[]> {
   const atoms: TruthAtom[] = [];
   const file = 'pyproject.toml';
-  const data = await safeRead(join(repoPath, file));
+  const data = await safeRead(source, file);
   if (!data) return atoms;
 
   for (let i = 0; i < data.lines.length; i++) {
@@ -138,10 +137,10 @@ async function extractPyproject(repoPath: string): Promise<TruthAtom[]> {
 }
 
 /** Extract from README.md */
-async function extractReadme(repoPath: string): Promise<TruthAtom[]> {
+async function extractReadme(source: RepoSource): Promise<TruthAtom[]> {
   const atoms: TruthAtom[] = [];
   const file = 'README.md';
-  const data = await safeRead(join(repoPath, file));
+  const data = await safeRead(source, file);
   if (!data) return atoms;
 
   const { lines } = data;
@@ -219,12 +218,12 @@ async function extractReadme(repoPath: string): Promise<TruthAtom[]> {
 }
 
 /** Extract from CHANGELOG.md */
-async function extractChangelog(repoPath: string): Promise<TruthAtom[]> {
+async function extractChangelog(source: RepoSource): Promise<TruthAtom[]> {
   const atoms: TruthAtom[] = [];
 
   // Try CHANGELOG.md, then CHANGES.md
   for (const name of ['CHANGELOG.md', 'CHANGES.md']) {
-    const data = await safeRead(join(repoPath, name));
+    const data = await safeRead(source, name);
     if (!data) continue;
 
     const { lines } = data;
@@ -256,65 +255,43 @@ async function extractChangelog(repoPath: string): Promise<TruthAtom[]> {
   return atoms;
 }
 
-/** Recursively collect source files (shallow — max 3 levels deep) */
-async function collectSourceFiles(dir: string, base: string, depth = 0): Promise<string[]> {
-  if (depth > 3) return [];
-  const files: string[] = [];
-
-  try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist' || entry.name === 'vendor') continue;
-
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...await collectSourceFiles(full, base, depth + 1));
-      } else if (SOURCE_EXTENSIONS.has(extname(entry.name))) {
-        files.push(relative(base, full).replace(/\\/g, '/'));
-      }
-    }
-  } catch { /* permission errors etc */ }
-
-  return files;
-}
-
 /** Extract from source files — flags, env vars, errors, invariants */
-async function extractSource(repoPath: string): Promise<TruthAtom[]> {
+async function extractSource(source: RepoSource): Promise<TruthAtom[]> {
   const atoms: TruthAtom[] = [];
-  const sourceFiles = await collectSourceFiles(repoPath, repoPath);
+  const sourceFiles = await source.listFiles(SOURCE_EXTENSIONS, 3);
 
   // Also use filenames themselves as core_objects
   for (const f of sourceFiles) {
-    const name = basename(f, extname(f));
+    const name = basename(f.path, extname(f.path));
     if (name.length > 2 && !BORING_NOUNS.has(name.toLowerCase()) && !name.startsWith('index')) {
-      atoms.push(makeAtom('core_object', name, f, 1, 1, 0.4, ['filename']));
+      atoms.push(makeAtom('core_object', name, f.path, 1, 1, 0.4, ['filename']));
     }
   }
 
-  for (const relFile of sourceFiles) {
-    const data = await safeRead(join(repoPath, relFile));
-    if (!data) continue;
+  for (const file of sourceFiles) {
+    const raw = await source.readFile(file.path);
+    if (!raw) continue;
 
-    const { lines } = data;
+    const lines = raw.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
       // CLI flags: --something
       const flagMatches = line.matchAll(/--([a-zA-Z][\w-]{2,})/g);
       for (const m of flagMatches) {
-        atoms.push(makeAtom('cli_flag', `--${m[1]}`, relFile, i + 1, i + 1, 0.9, ['cli']));
+        atoms.push(makeAtom('cli_flag', `--${m[1]}`, file.path, i + 1, i + 1, 0.9, ['cli']));
       }
 
       // Env vars: process.env['KEY'] or process.env.KEY or os.environ['KEY']
       const envMatches = line.matchAll(/(?:process\.env\[['"]|process\.env\.|environ\[['"])([A-Z][A-Z0-9_]{2,})/g);
       for (const m of envMatches) {
-        atoms.push(makeAtom('config_key', m[1], relFile, i + 1, i + 1, 0.9, ['config']));
+        atoms.push(makeAtom('config_key', m[1], file.path, i + 1, i + 1, 0.9, ['config']));
       }
 
       // Error strings: throw new Error('...')
       const errMatch = line.match(/(?:throw new \w*Error|Error)\(\s*['"`](.{10,100})['"`]/);
       if (errMatch) {
-        atoms.push(makeAtom('error_string', errMatch[1], relFile, i + 1, i + 1, 0.8, ['error']));
+        atoms.push(makeAtom('error_string', errMatch[1], file.path, i + 1, i + 1, 0.8, ['error']));
       }
 
       // Invariant comments: INVARIANT, MUST, NEVER, ALWAYS, guarantee
@@ -322,7 +299,7 @@ async function extractSource(repoPath: string): Promise<TruthAtom[]> {
       if (invMatch) {
         const comment = line.replace(/^\s*\/[/*]\s*/, '').trim();
         if (comment.length > 10) {
-          atoms.push(makeAtom('invariant', comment, relFile, i + 1, i + 1, 0.7, ['constraint', 'code']));
+          atoms.push(makeAtom('invariant', comment, file.path, i + 1, i + 1, 0.7, ['constraint', 'code']));
         }
       }
     }
@@ -386,23 +363,28 @@ function preferDocs(atoms: TruthAtom[]): TruthAtom[] {
 
 // ── Main pipeline ───────────────────────────────────────────────
 
-/** Extract all truth atoms from a repo. Deterministic, no LLM calls. */
-export async function extractTruthBundle(repoPath: string): Promise<TruthBundle> {
+/**
+ * Extract all truth atoms from a repo. Deterministic, no LLM calls.
+ * Accepts a RepoSource (local or remote) or a string path (backwards compat).
+ */
+export async function extractTruthBundle(input: string | RepoSource): Promise<TruthBundle> {
+  const source: RepoSource = typeof input === 'string' ? new LocalRepoSource(input) : input;
+
   const rawAtoms: TruthAtom[] = [];
   let scannedFiles = 0;
 
   // Phase 1: structured files
-  rawAtoms.push(...await extractPackageJson(repoPath));
-  rawAtoms.push(...await extractPyproject(repoPath));
+  rawAtoms.push(...await extractPackageJson(source));
+  rawAtoms.push(...await extractPyproject(source));
   scannedFiles += 2;
 
   // Phase 2: docs
-  rawAtoms.push(...await extractReadme(repoPath));
-  rawAtoms.push(...await extractChangelog(repoPath));
+  rawAtoms.push(...await extractReadme(source));
+  rawAtoms.push(...await extractChangelog(source));
   scannedFiles += 2;
 
   // Phase 3: source
-  const sourceAtoms = await extractSource(repoPath);
+  const sourceAtoms = await extractSource(source);
   rawAtoms.push(...sourceAtoms);
   // Count unique source files
   const sourceFilesScanned = new Set(sourceAtoms.map(a => a.source.file)).size;

@@ -42,6 +42,8 @@ import { verifyArtifact, formatVerifyResult } from './verify.js';
 import { loadBuiltStore, addArtifactPaths, getBuiltRecord, getToolVersion, listBuiltRecords, formatBuiltRecord, formatBuiltList } from './built.js';
 import { inferProfile, formatProfileForPrompt, formatProfileForDisplay } from './infer.js';
 import { getPersona, getPersonaByName, loadConfig, saveConfig, formatWhoami, formatPersonaCard, formatAbout, PERSONA_NAMES } from './persona.js';
+import { LocalRepoSource, RemoteRepoSource, resolveOutputDir, resolveRepoName } from './source.js';
+import type { RepoSource } from './source.js';
 import type { RepoContext, RepoType, DecisionPacket, WebOptions, InferenceProfile } from './types.js';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
@@ -124,6 +126,13 @@ Ritual options:
   Runs drive --curate-org --web --blueprint --review, then updates catalog.
   Accepts all drive options plus --format for catalog output.
 
+Remote options (for drive, infer, ritual, blueprint, review, buildpack, verify, built):
+  --remote <owner/repo>  Analyze a GitHub repo without a local clone.
+  --ref <branch|tag|sha> Git ref for remote repos (default: default branch).
+
+Environment:
+  GITHUB_TOKEN           GitHub PAT for higher rate limits (5000/hr vs 60/hr).
+
 Global:
   --version                  Print version and exit.
   --help                     Show this help.`);
@@ -135,26 +144,18 @@ Global:
 async function cmdInfer(args: string[]): Promise<void> {
   const jsonMode = args.includes('--json');
   const repoType: RepoType = (flagValue(args, '--type') as RepoType) ?? 'unknown';
-
-  const valueFlags = ['--type'];
-  const valueIndices = flagValueIndices(args, valueFlags);
-  const positional = args.filter((a: string, i: number) =>
-    !a.startsWith('--') && !valueIndices.has(i));
-  const repoPath = resolve(positional[0] ?? '.');
-  const repoName = basename(repoPath);
+  const { source, outputDir, repoName } = buildSource(args);
 
   // Extract truth atoms
-  const { extractTruthBundle } = await import('./truth.js');
-  const truthBundle = await extractTruthBundle(repoPath);
+  const truthBundle = await extractTruthBundle(source);
   console.error(`Truth: ${truthBundle.atoms.length} atoms from ${truthBundle.stats.scanned_files} files`);
 
   const profile = inferProfile(repoName, repoType, truthBundle);
 
-  // Save to .artifact/inference.json
-  const outDir = resolve(repoPath, '.artifact');
-  await mkdir(outDir, { recursive: true });
+  // Save to outputDir/inference.json
+  await mkdir(outputDir, { recursive: true });
   await writeFile(
-    resolve(outDir, 'inference.json'),
+    resolve(outputDir, 'inference.json'),
     JSON.stringify(profile, null, 2) + '\n',
     'utf-8',
   );
@@ -184,6 +185,52 @@ function flagValueIndices(args: string[], flags: string[]): Set<number> {
   return indices;
 }
 
+// ── Source builder ───────────────────────────────────────────────
+
+interface SourceContext {
+  source: RepoSource;
+  outputDir: string;
+  repoPath: string;  // local: actual path, remote: outputDir
+  repoName: string;
+}
+
+const REMOTE_VALUE_FLAGS = ['--remote', '--ref'];
+
+function buildSource(args: string[]): SourceContext {
+  const remoteSpec = flagValue(args, '--remote');
+  const ref = flagValue(args, '--ref');
+
+  if (remoteSpec) {
+    const parts = remoteSpec.split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      console.error('Error: --remote must be in "owner/repo" format (e.g., --remote mcp-tool-shop-org/artifact)');
+      process.exit(1);
+    }
+    const [owner, repo] = parts;
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      console.error('Warning: GITHUB_TOKEN not set. Rate limit: 60 req/hr. Private repos will fail.');
+    }
+    const source = new RemoteRepoSource(owner, repo, ref, token);
+    const outputDir = resolveOutputDir(source);
+    const repoName = resolveRepoName(source);
+    return { source, outputDir, repoPath: outputDir, repoName };
+  }
+
+  // Local mode
+  const allValueFlags = ['--type', '--web-cache-ttl', '--web-domains', '--artifact', ...REMOTE_VALUE_FLAGS];
+  const valueIndices = flagValueIndices(args, allValueFlags);
+  const positional = args.filter((a: string, i: number) =>
+    !a.startsWith('--') && !valueIndices.has(i));
+  const repoPath = resolve(positional[0] ?? '.');
+  const source = new LocalRepoSource(repoPath);
+  const outputDir = resolveOutputDir(source, repoPath);
+  const repoName = resolveRepoName(source);
+  return { source, outputDir, repoPath, repoName };
+}
+
+// ── Drive command ───────────────────────────────────────────────
+
 async function cmdDrive(args: string[]): Promise<void> {
   const noCurator = args.includes('--no-curator');
   const curatorSpeak = args.includes('--curator-speak');
@@ -205,16 +252,11 @@ async function cmdDrive(args: string[]): Promise<void> {
     refresh: webRefresh,
   };
 
-  // Filter positional args (skip flags and their values)
-  const valueFlags = ['--type', '--web-cache-ttl', '--web-domains'];
-  const valueIndices = flagValueIndices(args, valueFlags);
-  const positional = args.filter((a: string, i: number) =>
-    !a.startsWith('--') && !valueIndices.has(i));
-  const repoPath = resolve(positional[0] ?? '.');
-  const repoName = basename(repoPath);
+  // Resolve source (local or remote)
+  const { source, outputDir, repoPath, repoName } = buildSource(args);
 
   // Extract truth atoms
-  const truthBundle = await extractTruthBundle(repoPath);
+  const truthBundle = await extractTruthBundle(source);
   const typeStats = Object.entries(truthBundle.stats.atoms_by_type).map(([t, n]) => `${t}:${n}`).join(', ');
   console.error(`Truth: ${truthBundle.atoms.length} atoms from ${truthBundle.stats.scanned_files} files (${typeStats})`);
 
@@ -225,7 +267,7 @@ async function cmdDrive(args: string[]): Promise<void> {
   };
 
   // Load history
-  const store = await history.load(repoPath);
+  const store = await history.load(repoPath, outputDir);
 
   // Compute inference profile (always runs, no Ollama)
   const profile = inferProfile(repoName, repoType, truthBundle);
@@ -251,9 +293,9 @@ async function cmdDrive(args: string[]): Promise<void> {
   }
 
   // Save inference profile
-  const inferDir = resolve(repoPath, '.artifact');
+  await mkdir(outputDir, { recursive: true });
   await writeFile(
-    resolve(inferDir, 'inference.json'),
+    resolve(outputDir, 'inference.json'),
     JSON.stringify(effectiveProfile, null, 2) + '\n',
     'utf-8',
   );
@@ -285,7 +327,7 @@ async function cmdDrive(args: string[]): Promise<void> {
 
       // Build memory brief
       const query = `${repoName} ${repoType} artifact decision`;
-      const brief = await mem.buildMemoryBrief(repoPath, repoName, query, conn.host);
+      const brief = await mem.buildMemoryBrief(repoPath, repoName, query, conn.host, outputDir);
       if (brief.formatted) {
         const total = brief.repo_entries.length + brief.org_entries.length;
         console.error(`Memory: ${total} relevant entries loaded (${brief.repo_entries.length} repo, ${brief.org_entries.length} org)`);
@@ -299,13 +341,13 @@ async function cmdDrive(args: string[]): Promise<void> {
         const queries = buildQueryMenu(tier, repoType, repoName);
         console.error(`Web: ${queries.length} queries queued`);
 
-        const findings = await collectFindings(queries, repoPath, webOpts);
+        const findings = await collectFindings(queries, repoPath, webOpts, outputDir);
         console.error(`Web: ${findings.length} findings collected`);
 
         const webBrief = await synthesizeBrief(findings, tier, repoName, conn);
         console.error(`Web: brief synthesized (${webBrief.web_status}, ${webBrief.recommendations.length} recommendations)`);
 
-        await saveBrief(repoPath, webBrief);
+        await saveBrief(repoPath, webBrief, outputDir);
         webBriefText = formatWebBrief(webBrief);
       }
 
@@ -373,11 +415,10 @@ async function cmdDrive(args: string[]): Promise<void> {
   packet.inference_profile = effectiveProfile;
 
   // Write decision packet + truth bundle
-  const outDir = resolve(repoPath, '.artifact');
-  await mkdir(outDir, { recursive: true });
-  const outPath = resolve(outDir, 'decision_packet.json');
+  await mkdir(outputDir, { recursive: true });
+  const outPath = resolve(outputDir, 'decision_packet.json');
   await writeFile(outPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
-  const bundlePath = resolve(outDir, 'truth_bundle.json');
+  const bundlePath = resolve(outputDir, 'truth_bundle.json');
   await writeFile(bundlePath, JSON.stringify(truthBundle, null, 2) + '\n', 'utf-8');
 
   // Append to rotation history
@@ -388,10 +429,10 @@ async function cmdDrive(args: string[]): Promise<void> {
     constraints: packet.constraints,
     atom_ids_used: packet.selected_hooks.map(h => h.atom_id),
     timestamp: packet.driver_meta.timestamp,
-  });
+  }, outputDir);
 
   // Write to persistent memory (org + repo)
-  await mem.writePacket(packet, repoPath, ollamaHost);
+  await mem.writePacket(packet, repoPath, ollamaHost, outputDir);
   console.error('Memory: decision saved to repo + org stores');
 
   // Record to org ledger (if --curate-org)
@@ -402,7 +443,7 @@ async function cmdDrive(args: string[]): Promise<void> {
 
   // Generate Blueprint Pack if requested
   if (emitBlueprint) {
-    const result = await blueprint.generate(repoPath, packet);
+    const result = await blueprint.generate(repoPath, packet, outputDir);
     if (result) {
       console.error(`Blueprint: ${result.markdown_path}`);
       console.error(`Blueprint: ${result.json_path}`);
@@ -420,7 +461,7 @@ async function cmdDrive(args: string[]): Promise<void> {
 
   // Print review card if requested
   if (emitReview) {
-    const card = await review(repoPath);
+    const card = await review(repoPath, outputDir);
     if (card) {
       console.error('');
       console.error(card.text);
@@ -608,13 +649,11 @@ async function cmdOrgBans(): Promise<void> {
 // ── Blueprint command ────────────────────────────────────────────
 
 async function cmdBlueprint(args: string[]): Promise<void> {
-  const repoPath = resolve(args[0] ?? '.');
-  const repoName = basename(repoPath);
+  const { outputDir, repoPath, repoName } = buildSource(args);
 
-  const result = await blueprint.generate(repoPath);
+  const result = await blueprint.generate(repoPath, undefined, outputDir);
   if (!result) {
-    console.error(`No decision packet found at ${resolve(repoPath, '.artifact', 'decision_packet.json')}`);
-    console.error('Run "artifact drive" first to generate a decision.');
+    console.error(`No decision packet found. Run "artifact drive" first to generate a decision.`);
     process.exit(1);
   }
 
@@ -633,13 +672,11 @@ async function cmdBlueprint(args: string[]): Promise<void> {
 
 async function cmdReview(args: string[]): Promise<void> {
   const jsonMode = args.includes('--json');
-  const positional = args.filter(a => !a.startsWith('--'));
-  const repoPath = resolve(positional[0] ?? '.');
+  const { outputDir, repoPath } = buildSource(args);
 
-  const result = await review(repoPath);
+  const result = await review(repoPath, outputDir);
   if (!result) {
-    console.error(`No decision packet found at ${resolve(repoPath, '.artifact', 'decision_packet.json')}`);
-    console.error('Run "artifact drive" first to generate a decision.');
+    console.error(`No decision packet found. Run "artifact drive" first to generate a decision.`);
     process.exit(1);
   }
 
@@ -680,14 +717,11 @@ async function cmdCatalog(args: string[]): Promise<void> {
 
 async function cmdBuildpack(args: string[]): Promise<void> {
   const jsonMode = args.includes('--json');
-  const positional = args.filter(a => !a.startsWith('--'));
-  const repoPath = resolve(positional[0] ?? '.');
-  const repoName = basename(repoPath);
+  const { outputDir, repoPath } = buildSource(args);
 
-  const result = await buildpack(repoPath);
+  const result = await buildpack(repoPath, outputDir);
   if (!result) {
-    console.error(`No decision packet found at ${resolve(repoPath, '.artifact', 'decision_packet.json')}`);
-    console.error('Run "artifact drive" first to generate a decision.');
+    console.error(`No decision packet found. Run "artifact drive" first to generate a decision.`);
     process.exit(1);
   }
 
@@ -704,9 +738,7 @@ async function cmdVerify(args: string[]): Promise<void> {
   const artifactPath = flagValue(args, '--artifact');
   const jsonMode = args.includes('--json');
   const record = args.includes('--record');
-  const positional = args.filter((a, i) => !a.startsWith('--') && !flagValueIndices(args, ['--artifact']).has(i));
-  const repoPath = resolve(positional[0] ?? '.');
-  const repoName = basename(repoPath);
+  const { outputDir, repoPath, repoName } = buildSource(args);
 
   if (!artifactPath) {
     console.error('Usage: artifact verify [repo-path] --artifact <path> [--record]');
@@ -715,7 +747,7 @@ async function cmdVerify(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const result = await verifyArtifact(repoPath, artifactPath, { record });
+  const result = await verifyArtifact(repoPath, artifactPath, { record }, outputDir);
   if (!result) {
     console.error(`Could not load decision packet, truth bundle, or artifact file.`);
     console.error(`  Repo: ${repoPath}`);
@@ -958,15 +990,31 @@ async function cmdAbout(): Promise<void> {
 // ── Built commands ──────────────────────────────────────────────
 
 async function cmdBuiltAdd(args: string[]): Promise<void> {
-  if (args.length < 2) {
-    console.error('Usage: artifact built add <repo-path> <path...>');
-    console.error('  Attach artifact file paths to the built tracking store.');
-    process.exit(1);
-  }
+  const remoteSpec = flagValue(args, '--remote');
 
-  const repoPath = resolve(args[0]);
-  const repoName = basename(repoPath);
-  const paths = args.slice(1);
+  let repoName: string;
+  let paths: string[];
+
+  if (remoteSpec) {
+    // Remote mode: artifact built add --remote owner/repo <path...>
+    const valueIndices = flagValueIndices(args, REMOTE_VALUE_FLAGS);
+    const positional = args.filter((a, i) => !a.startsWith('--') && !valueIndices.has(i));
+    if (positional.length < 1) {
+      console.error('Usage: artifact built add --remote <owner/repo> <path...>');
+      process.exit(1);
+    }
+    repoName = remoteSpec;
+    paths = positional;
+  } else {
+    // Local mode: artifact built add <repo-path> <path...>
+    if (args.length < 2) {
+      console.error('Usage: artifact built add <repo-path> <path...>');
+      console.error('  Attach artifact file paths to the built tracking store.');
+      process.exit(1);
+    }
+    repoName = basename(resolve(args[0]));
+    paths = args.slice(1);
+  }
 
   const toolVersion = await getToolVersion();
   const persona = await getPersona();

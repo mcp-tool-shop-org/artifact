@@ -21,9 +21,10 @@ import type {
 
 // ── Load helpers ────────────────────────────────────────────────
 
-/** Load the latest decision packet from .artifact/ */
-export async function loadPacket(repoPath: string): Promise<DecisionPacket | null> {
-  const file = resolve(repoPath, '.artifact', 'decision_packet.json');
+/** Load the latest decision packet from .artifact/ (or explicit outputDir) */
+export async function loadPacket(repoPath: string, outputDir?: string): Promise<DecisionPacket | null> {
+  const dir = outputDir ?? resolve(repoPath, '.artifact');
+  const file = resolve(dir, 'decision_packet.json');
   try {
     const raw = await readFile(file, 'utf-8');
     return JSON.parse(raw) as DecisionPacket;
@@ -32,9 +33,10 @@ export async function loadPacket(repoPath: string): Promise<DecisionPacket | nul
   }
 }
 
-/** Load the truth bundle from .artifact/ */
-export async function loadTruthBundle(repoPath: string): Promise<TruthBundle | null> {
-  const file = resolve(repoPath, '.artifact', 'truth_bundle.json');
+/** Load the truth bundle from .artifact/ (or explicit outputDir) */
+export async function loadTruthBundle(repoPath: string, outputDir?: string): Promise<TruthBundle | null> {
+  const dir = outputDir ?? resolve(repoPath, '.artifact');
+  const file = resolve(dir, 'truth_bundle.json');
   try {
     const raw = await readFile(file, 'utf-8');
     return JSON.parse(raw) as TruthBundle;
@@ -43,9 +45,10 @@ export async function loadTruthBundle(repoPath: string): Promise<TruthBundle | n
   }
 }
 
-/** Load the web brief from .artifact/web/ */
-async function loadWebBrief(repoPath: string): Promise<WebBrief | null> {
-  const file = resolve(repoPath, '.artifact', 'web', 'brief.json');
+/** Load the web brief from .artifact/web/ (or explicit outputDir) */
+async function loadWebBrief(repoPath: string, outputDir?: string): Promise<WebBrief | null> {
+  const dir = outputDir ?? resolve(repoPath, '.artifact');
+  const file = resolve(dir, 'web', 'brief.json');
   try {
     const raw = await readFile(file, 'utf-8');
     return JSON.parse(raw) as WebBrief;
@@ -685,19 +688,19 @@ async function getVersion(repoPath: string): Promise<string> {
  * Generate a Blueprint Pack from the latest decision packet.
  * Writes: .artifact/ARTIFACT_BLUEPRINT.md, .artifact/blueprint.json, .artifact/assets/
  */
-export async function generate(repoPath: string, packet?: DecisionPacket): Promise<BlueprintResult | null> {
-  const pkt = packet ?? await loadPacket(repoPath);
+export async function generate(repoPath: string, packet?: DecisionPacket, outputDir?: string): Promise<BlueprintResult | null> {
+  const outDir = outputDir ?? resolve(repoPath, '.artifact');
+  const pkt = packet ?? await loadPacket(repoPath, outDir);
   if (!pkt) return null;
 
-  const truthBundle = await loadTruthBundle(repoPath);
+  const truthBundle = await loadTruthBundle(repoPath, outDir);
   const atoms = truthBundle?.atoms ?? [];
-  const webBrief = await loadWebBrief(repoPath);
+  const webBrief = await loadWebBrief(repoPath, outDir);
 
   // Quality gates
   const missingInputs = checkQualityGates(pkt, atoms);
 
   // Provenance hashes
-  const outDir = resolve(repoPath, '.artifact');
   const hashes: ProvenanceHashes = {
     packet: await fileHash(resolve(outDir, 'decision_packet.json')),
     bundle: await fileHash(resolve(outDir, 'truth_bundle.json')),

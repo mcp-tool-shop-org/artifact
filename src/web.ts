@@ -208,13 +208,14 @@ function queryHash(query: string): string {
   return createHash('sha256').update(query.toLowerCase().trim()).digest('hex').slice(0, 16);
 }
 
-function cachePath(repoRoot: string): string {
+function cachePath(repoRoot: string, outputDir?: string): string {
+  if (outputDir) return join(outputDir, 'web', CACHE_FILE);
   return join(repoRoot, CACHE_DIR, CACHE_FILE);
 }
 
-async function loadCache(repoRoot: string): Promise<WebCache> {
+async function loadCache(repoRoot: string, outputDir?: string): Promise<WebCache> {
   try {
-    const raw = await readFile(cachePath(repoRoot), 'utf-8');
+    const raw = await readFile(cachePath(repoRoot, outputDir), 'utf-8');
     const parsed = JSON.parse(raw) as WebCache;
     if (parsed.entries && typeof parsed.entries === 'object') return parsed;
     return { entries: {} };
@@ -223,10 +224,10 @@ async function loadCache(repoRoot: string): Promise<WebCache> {
   }
 }
 
-async function saveCache(repoRoot: string, cache: WebCache): Promise<void> {
-  const dir = join(repoRoot, CACHE_DIR);
+async function saveCache(repoRoot: string, cache: WebCache, outputDir?: string): Promise<void> {
+  const dir = outputDir ? join(outputDir, 'web') : join(repoRoot, CACHE_DIR);
   await mkdir(dir, { recursive: true });
-  await writeFile(cachePath(repoRoot), JSON.stringify(cache, null, 2) + '\n', 'utf-8');
+  await writeFile(cachePath(repoRoot, outputDir), JSON.stringify(cache, null, 2) + '\n', 'utf-8');
 }
 
 function isCacheValid(entry: WebCacheEntry): boolean {
@@ -240,8 +241,9 @@ export async function collectFindings(
   queries: Array<{ query: string; tags: string[] }>,
   repoRoot: string,
   opts: WebOptions,
+  outputDir?: string,
 ): Promise<WebFinding[]> {
-  const cache = await loadCache(repoRoot);
+  const cache = await loadCache(repoRoot, outputDir);
   const allFindings: WebFinding[] = [];
   let cacheHits = 0;
 
@@ -272,7 +274,7 @@ export async function collectFindings(
   }
 
   // Save updated cache
-  await saveCache(repoRoot, cache);
+  await saveCache(repoRoot, cache, outputDir);
 
   if (cacheHits > 0) {
     console.error(`Web: ${cacheHits}/${queries.length} queries served from cache`);
@@ -429,8 +431,8 @@ export async function synthesizeBrief(
 
 // ── Save brief to disk ──────────────────────────────────────────
 
-export async function saveBrief(repoRoot: string, brief: WebBrief): Promise<void> {
-  const dir = join(repoRoot, CACHE_DIR);
+export async function saveBrief(repoRoot: string, brief: WebBrief, outputDir?: string): Promise<void> {
+  const dir = outputDir ? join(outputDir, 'web') : join(repoRoot, CACHE_DIR);
   await mkdir(dir, { recursive: true });
   const path = join(dir, BRIEF_FILE);
   await writeFile(path, JSON.stringify(brief, null, 2) + '\n', 'utf-8');
