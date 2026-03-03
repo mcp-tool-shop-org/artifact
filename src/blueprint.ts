@@ -16,7 +16,7 @@ import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import type {
   DecisionPacket, TruthBundle, TruthAtom, WebBrief,
-  SelectedHook,
+  SelectedHook, InferenceProfile,
 } from './types.js';
 
 // ── Load helpers ────────────────────────────────────────────────
@@ -367,6 +367,36 @@ function buildMarkdown(
   }
   lines.push('');
 
+  // ── Inference Profile (if present) ──
+  if (packet.inference_profile) {
+    const ip = packet.inference_profile;
+    lines.push('## Inference Profile');
+    lines.push('');
+    lines.push(`| Field | Value |`);
+    lines.push(`|-------|-------|`);
+    lines.push(`| Archetype | ${ip.repo_archetype} |`);
+    lines.push(`| Primary user | ${ip.primary_user} |`);
+    lines.push(`| Bottleneck | ${ip.primary_bottleneck} |`);
+    lines.push(`| Maturity | ${ip.maturity} |`);
+    lines.push(`| Risk | ${ip.risk_profile} |`);
+    lines.push(`| Evidence | ${(ip.evidence_strength * 100).toFixed(0)}% |`);
+    lines.push('');
+    lines.push('**Tier weights:**');
+    const sorted = Object.entries(ip.recommended_tier_weights)
+      .sort(([, a], [, b]) => b - a);
+    for (const [tier, weight] of sorted) {
+      lines.push(`- ${tier}: ${Math.round(weight * 100)}%`);
+    }
+    lines.push('');
+    if (ip.tier_rationale.length > 0) {
+      lines.push('**Rationale:**');
+      for (const r of ip.tier_rationale) {
+        lines.push(`- ${r}`);
+      }
+      lines.push('');
+    }
+  }
+
   // ── Constraints ──
   lines.push('## Constraints');
   lines.push('');
@@ -549,6 +579,7 @@ interface BlueprintJson {
     pick: string;
     risk: string;
   };
+  inference_profile: InferenceProfile | null;
   missing_inputs: MissingInput[];
   provenance: {
     decision_packet: string;
@@ -610,6 +641,7 @@ function buildJson(
       ? webBrief.recommendations
       : null,
     callouts: packet.callouts,
+    inference_profile: packet.inference_profile ?? null,
     missing_inputs: missingInputs,
     provenance: {
       decision_packet: '.artifact/decision_packet.json',

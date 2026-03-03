@@ -24,7 +24,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import type {
   Tier, Season, LedgerEntry, OrgStatus, SignatureMove,
-  CurationBrief, DecisionPacket,
+  CurationBrief, DecisionPacket, InferenceProfile,
 } from './types.js';
 
 // ── Paths ────────────────────────────────────────────────────────
@@ -100,6 +100,41 @@ const SEASONS: Record<string, Season> = {
 };
 
 export const SEASON_NAMES = Object.keys(SEASONS);
+
+// ── Season × Inference Weight Merging ────────────────────────────
+
+const ALL_TIERS: Tier[] = ['Exec', 'Dev', 'Creator', 'Fun', 'Promotion'];
+
+/**
+ * Merge inference profile weights with active season tier_weights.
+ * Season weights are multipliers (e.g., Dev:2 doubles Dev's share).
+ * Result is renormalized to sum to 1.0 with a 2% floor.
+ */
+export function mergeWeightsWithSeason(
+  profile: InferenceProfile,
+  season: Season | null,
+): Record<Tier, number> {
+  const merged = { ...profile.recommended_tier_weights };
+
+  if (!season?.tier_weights) return merged;
+
+  for (const tier of ALL_TIERS) {
+    const multiplier = season.tier_weights[tier] ?? 1;
+    merged[tier] *= multiplier;
+  }
+
+  // Renormalize with 2% floor
+  const total = Object.values(merged).reduce((s, w) => s + w, 0);
+  for (const tier of ALL_TIERS) {
+    merged[tier] = Math.max(0.02, merged[tier] / total);
+  }
+  const total2 = Object.values(merged).reduce((s, w) => s + w, 0);
+  for (const tier of ALL_TIERS) {
+    merged[tier] = Number((merged[tier] / total2).toFixed(3));
+  }
+
+  return merged;
+}
 
 // ── Ledger I/O ───────────────────────────────────────────────────
 

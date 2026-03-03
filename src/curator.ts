@@ -38,7 +38,7 @@ function formatAtoms(atoms: TruthAtom[]): string {
   return sections.join('\n\n');
 }
 
-function buildPrompt(ctx: RepoContext, history: HistoryStore, memoryBrief?: string, webBrief?: string, curationBrief?: string): string {
+function buildPrompt(ctx: RepoContext, history: HistoryStore, memoryBrief?: string, webBrief?: string, curationBrief?: string, inferenceProfileText?: string): string {
   const usedTiers = recentTiers(history);
   const usedFormats = recentFormats(history);
   const usedConstraints = recentConstraints(history);
@@ -59,7 +59,7 @@ ${atomsSection}
 
 === RECENTLY USED ATOM IDs (avoid repeating) ===
 ${usedAtoms.length > 0 ? usedAtoms.join(', ') : 'none'}
-${memorySection ? `\n${memorySection}\n` : ''}${webBrief ? `\n${webBrief}\n\n` : ''}${curationBrief ? `\n${curationBrief}\n\n` : ''}AVAILABLE TIERS: ${tiersAvail}
+${memorySection ? `\n${memorySection}\n` : ''}${webBrief ? `\n${webBrief}\n\n` : ''}${inferenceProfileText ? `\n${inferenceProfileText}\n\n` : ''}${curationBrief ? `\n${curationBrief}\n\n` : ''}AVAILABLE TIERS: ${tiersAvail}
 RECENTLY USED FORMATS (avoid): ${usedFormats.length > 0 ? usedFormats.join(', ') : 'none'}
 RECENTLY USED CONSTRAINTS (vary): ${usedConstraints.length > 0 ? usedConstraints.join(', ') : 'none'}
 
@@ -73,7 +73,7 @@ Tone: museum-placard, field-manual, heist-plan, lab-notebook, 90s-manual, dead-s
 Structure: before-after, quest, threat-mitigation, recipe, trial-activation, signal-proof
 
 YOUR JOB:
-1. Pick a tier (avoid recently used ones unless the repo demands it)
+1. Pick a tier. If an INFERENCE PROFILE is provided, follow its recommended tier weights closely. Pick the highest-weighted tier unless org bans or recency demand otherwise
 2. Pick 2-3 format families from that tier (avoid recently used ones)
 3. Pick 2-3 constraints from different decks
 4. List 3-5 must_include requirements that force repo-specificity
@@ -248,8 +248,9 @@ export async function drive(
   webBrief?: string,
   curationBrief?: string,
   promotionMandate?: boolean,
+  inferenceProfileText?: string,
 ): Promise<DecisionPacket | null> {
-  const prompt = buildPrompt(ctx, history, memoryBrief, webBrief, curationBrief);
+  const prompt = buildPrompt(ctx, history, memoryBrief, webBrief, curationBrief, inferenceProfileText);
   const raw = await generate(conn, prompt);
   if (!raw) return null;
 

@@ -5,6 +5,7 @@
  *
  * Commands:
  *   drive [repo-path]           Run the Curator freshness driver
+ *   infer [repo-path]           Compute inference profile (no Ollama)
  *   blueprint [repo-path]       Generate Blueprint Pack from latest decision
  *   buildpack [repo-path]       Emit builder prompt packet for chat LLMs
  *   verify [repo-path]          Lint artifact against blueprint + truth bundle
@@ -34,13 +35,15 @@ import { generateCatalog } from './catalog.js';
 import type { CatalogFormat } from './catalog.js';
 import { buildpack } from './buildpack.js';
 import { verifyArtifact, formatVerifyResult } from './verify.js';
-import type { RepoContext, RepoType, DecisionPacket, WebOptions } from './types.js';
+import { inferProfile, formatProfileForPrompt, formatProfileForDisplay } from './infer.js';
+import type { RepoContext, RepoType, DecisionPacket, WebOptions, InferenceProfile } from './types.js';
 
 function usage(): never {
   console.error(`Usage: artifact <command> [options]
 
 Commands:
   drive [repo-path]           Run the Curator freshness driver.
+  infer [repo-path]           Compute inference profile (no Ollama).
   ritual [repo-path]          Full ritual: drive + blueprint + review + catalog.
   blueprint [repo-path]       Generate Blueprint Pack from latest decision.
   buildpack [repo-path]       Emit builder prompt packet for chat LLMs (--json for JSON).
@@ -62,6 +65,7 @@ Commands:
 Drive options:
   --no-curator         Skip Ollama, use deterministic fallback only.
   --curator-speak      Print Curator callouts (veto/twist/pick/risk).
+  --explain            Print inference profile (why this tier was chosen).
   --blueprint          Also generate Blueprint Pack after drive.
   --review             Also print review card after drive.
   --type <type>        Repo type (R1_tooling_cli, etc.). Default: unknown.
@@ -71,6 +75,10 @@ Drive options:
   --web-refresh        Bypass cache, re-fetch all queries.
   --curate-org         Enable org-wide curation (season + bans + gaps).
   --help               Show this help.
+
+Infer options:
+  --type <type>        Repo type (R1_tooling_cli, etc.). Default: auto-detect.
+  --json               Output as JSON instead of human-readable text.
 
 Catalog options:
   --all                Include all entries (ignore active season filter).
@@ -86,6 +94,42 @@ Ritual options:
   Runs drive --curate-org --web --blueprint --review, then updates catalog.
   Accepts all drive options plus --format for catalog output.`);
   return process.exit(1) as never;
+}
+
+// ── Infer command ───────────────────────────────────────────────
+
+async function cmdInfer(args: string[]): Promise<void> {
+  const jsonMode = args.includes('--json');
+  const repoType: RepoType = (flagValue(args, '--type') as RepoType) ?? 'unknown';
+
+  const valueFlags = ['--type'];
+  const valueIndices = flagValueIndices(args, valueFlags);
+  const positional = args.filter((a: string, i: number) =>
+    !a.startsWith('--') && !valueIndices.has(i));
+  const repoPath = resolve(positional[0] ?? '.');
+  const repoName = basename(repoPath);
+
+  // Extract truth atoms
+  const { extractTruthBundle } = await import('./truth.js');
+  const truthBundle = await extractTruthBundle(repoPath);
+  console.error(`Truth: ${truthBundle.atoms.length} atoms from ${truthBundle.stats.scanned_files} files`);
+
+  const profile = inferProfile(repoName, repoType, truthBundle);
+
+  // Save to .artifact/inference.json
+  const outDir = resolve(repoPath, '.artifact');
+  await mkdir(outDir, { recursive: true });
+  await writeFile(
+    resolve(outDir, 'inference.json'),
+    JSON.stringify(profile, null, 2) + '\n',
+    'utf-8',
+  );
+
+  if (jsonMode) {
+    console.log(JSON.stringify(profile, null, 2));
+  } else {
+    console.log(formatProfileForDisplay(profile));
+  }
 }
 
 // ── Drive command ───────────────────────────────────────────────
@@ -109,6 +153,7 @@ function flagValueIndices(args: string[], flags: string[]): Set<number> {
 async function cmdDrive(args: string[]): Promise<void> {
   const noCurator = args.includes('--no-curator');
   const curatorSpeak = args.includes('--curator-speak');
+  const explain = args.includes('--explain');
   const emitBlueprint = args.includes('--blueprint');
   const emitReview = args.includes('--review');
   const curateOrg = args.includes('--curate-org');
@@ -148,6 +193,37 @@ async function cmdDrive(args: string[]): Promise<void> {
   // Load history
   const store = await history.load(repoPath);
 
+  // Compute inference profile (always runs, no Ollama)
+  const profile = inferProfile(repoName, repoType, truthBundle);
+  const profilePromptText = formatProfileForPrompt(profile);
+  console.error(`Inference: archetype=${profile.repo_archetype}, bottleneck=${profile.primary_bottleneck}, evidence=${(profile.evidence_strength * 100).toFixed(0)}%`);
+
+  // Merge with season weights if org curation is active
+  let effectiveProfile = profile;
+  if (curateOrg) {
+    const season = await org.loadSeason();
+    if (season) {
+      const mergedWeights = org.mergeWeightsWithSeason(profile, season);
+      effectiveProfile = { ...profile, recommended_tier_weights: mergedWeights };
+      console.error(`Inference: weights merged with season "${season.name}"`);
+    }
+  }
+
+  // Print explain if requested
+  if (explain) {
+    console.error('');
+    console.error(formatProfileForDisplay(effectiveProfile));
+    console.error('');
+  }
+
+  // Save inference profile
+  const inferDir = resolve(repoPath, '.artifact');
+  await writeFile(
+    resolve(inferDir, 'inference.json'),
+    JSON.stringify(effectiveProfile, null, 2) + '\n',
+    'utf-8',
+  );
+
   let packet: DecisionPacket;
   let ollamaHost: string | undefined;
 
@@ -156,7 +232,7 @@ async function cmdDrive(args: string[]): Promise<void> {
     if (webOpts.enabled) {
       console.error('Web: --web requires Ollama for synthesis. Skipped (use without --no-curator).');
     }
-    packet = driveFallback(ctx, store);
+    packet = driveFallback(ctx, store, effectiveProfile);
     // Attach org curation metadata even in fallback mode
     if (curateOrg) {
       const curation = await org.buildCurationBrief(repoName);
@@ -211,7 +287,7 @@ async function cmdDrive(args: string[]): Promise<void> {
         curationBriefText = curation.formatted;
       }
 
-      const result = await curatorDrive(conn, ctx, store, brief.formatted || undefined, webBriefText, curationBriefText, promotionMandate);
+      const result = await curatorDrive(conn, ctx, store, brief.formatted || undefined, webBriefText, curationBriefText, promotionMandate, profilePromptText);
       if (result) {
         packet = result;
         // Attach org curation metadata to packet
@@ -238,11 +314,11 @@ async function cmdDrive(args: string[]): Promise<void> {
         }
       } else {
         console.error('Curator: Ollama responded but output was invalid. Falling back.');
-        packet = driveFallback(ctx, store);
+        packet = driveFallback(ctx, store, effectiveProfile);
       }
     } else {
       console.error('Curator: Ollama not available. Using fallback driver.');
-      packet = driveFallback(ctx, store);
+      packet = driveFallback(ctx, store, effectiveProfile);
     }
   }
 
@@ -256,6 +332,9 @@ async function cmdDrive(args: string[]): Promise<void> {
     if (c.risk) console.error(`  Risk:  ${c.risk}`);
     console.error('');
   }
+
+  // Attach inference profile to packet
+  packet.inference_profile = effectiveProfile;
 
   // Write decision packet + truth bundle
   const outDir = resolve(repoPath, '.artifact');
@@ -672,6 +751,8 @@ async function main(): Promise<void> {
 
   if (cmd === 'drive') {
     await cmdDrive(args.slice(1));
+  } else if (cmd === 'infer') {
+    await cmdInfer(args.slice(1));
   } else if (cmd === 'ritual') {
     await cmdRitual(args.slice(1));
   } else if (cmd === 'blueprint') {

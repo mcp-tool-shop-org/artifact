@@ -1,3 +1,43 @@
+// ── Inference Profile types (Phase 11) ──────────────────────────
+
+/** Who primarily benefits from an artifact about this repo */
+export type PrimaryUser =
+  | 'dev'
+  | 'operator'
+  | 'security_reviewer'
+  | 'exec'
+  | 'creator'
+  | 'community';
+
+/** What bottleneck the artifact should address */
+export type PrimaryBottleneck =
+  | 'understanding'
+  | 'trust'
+  | 'adoption'
+  | 'integration'
+  | 'debuggability'
+  | 'positioning';
+
+/** Repo maturity stage */
+export type Maturity = 'early' | 'shipping' | 'stable' | 'legacy';
+
+/** Risk profile */
+export type RiskProfile = 'low' | 'med' | 'high';
+
+/** Inference profile — deterministic assessment of what the repo needs */
+export interface InferenceProfile {
+  repo_archetype: RepoType;
+  primary_user: PrimaryUser;
+  primary_bottleneck: PrimaryBottleneck;
+  maturity: Maturity;
+  risk_profile: RiskProfile;
+  evidence_strength: number;
+  recommended_tier_weights: Record<Tier, number>;
+  tier_rationale: string[];
+}
+
+// ── Repo types ──────────────────────────────────────────────────
+
 /** Repo type classification */
 export type RepoType =
   | 'R1_tooling_cli'
@@ -122,6 +162,8 @@ export interface DecisionPacket {
   // Phase 8: Promotion mandate
   promotion_mandate?: boolean;
   promotion_rejection?: PromotionRejection;
+  // Phase 11: Inference profile
+  inference_profile?: InferenceProfile;
 }
 
 /** A hook chosen by the Curator, traced back to an atom */

@@ -4,7 +4,7 @@
  * Respects history to avoid repetition.
  */
 
-import type { DecisionPacket, RepoContext, HistoryStore, Tier, TruthAtom, SelectedHook } from './types.js';
+import type { DecisionPacket, RepoContext, HistoryStore, Tier, TruthAtom, SelectedHook, InferenceProfile } from './types.js';
 import { TIERS, FORMAT_FAMILIES } from './curator.js';
 import { recentTiers, recentFormats, recentAtomIds } from './history.js';
 
@@ -73,19 +73,48 @@ function pickHooks(atoms: TruthAtom[], seed: number, usedIds: Set<string>): Sele
   return hooks;
 }
 
+/** Weighted tier selection using profile weights */
+function weightedTierSelect(
+  weights: Record<Tier, number>,
+  seed: number,
+  excludeTiers: Set<string>,
+): Tier {
+  const candidates: Array<[Tier, number]> = [];
+  for (const [tier, weight] of Object.entries(weights) as Array<[Tier, number]>) {
+    if (!excludeTiers.has(tier)) candidates.push([tier, weight]);
+  }
+  if (candidates.length === 0) {
+    const sorted = Object.entries(weights).sort(([, a], [, b]) => b - a);
+    return sorted[0][0] as Tier;
+  }
+  const total = candidates.reduce((s, [, w]) => s + w, 0);
+  const r = (seed % 1000) / 1000;
+  let cumulative = 0;
+  for (const [tier, weight] of candidates) {
+    cumulative += weight / total;
+    if (r <= cumulative) return tier;
+  }
+  return candidates[candidates.length - 1][0];
+}
+
 /** Deterministic fallback: rotate tiers, seed formats + constraints, ground in truth atoms. */
-export function driveFallback(ctx: RepoContext, history: HistoryStore): DecisionPacket {
+export function driveFallback(ctx: RepoContext, history: HistoryStore, profile?: InferenceProfile): DecisionPacket {
   const dateStr = new Date().toISOString().slice(0, 10);
   const seed = hash(ctx.repo_name + dateStr);
   const atoms = ctx.truth_bundle.atoms;
   const usedAtomIds = new Set(recentAtomIds(history));
 
-  // Pick tier: rotate through, avoiding recent
+  // Pick tier: use profile weights if available, else pure rotation
   const usedTiers = new Set(recentTiers(history));
-  const availTiers = TIERS.filter(t => !usedTiers.has(t));
-  const tier: Tier = availTiers.length > 0
-    ? availTiers[seed % availTiers.length]
-    : TIERS[seed % TIERS.length];
+  let tier: Tier;
+  if (profile) {
+    tier = weightedTierSelect(profile.recommended_tier_weights, seed, usedTiers);
+  } else {
+    const availTiers = TIERS.filter(t => !usedTiers.has(t));
+    tier = availTiers.length > 0
+      ? availTiers[seed % availTiers.length]
+      : TIERS[seed % TIERS.length];
+  }
 
   // Pick formats from that tier, avoiding recent
   const usedFormats = new Set(recentFormats(history));
