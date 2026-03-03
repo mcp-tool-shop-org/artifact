@@ -6,6 +6,8 @@
  * Commands:
  *   drive [repo-path]           Run the Curator freshness driver
  *   blueprint [repo-path]       Generate Blueprint Pack from latest decision
+ *   buildpack [repo-path]       Emit builder prompt packet for chat LLMs
+ *   verify [repo-path]          Lint artifact against blueprint + truth bundle
  *   review [repo-path]          Print a 4-block editorial review card
  *   catalog [--all]             Generate season catalog
  *   memory show [--org]         Show memory entries
@@ -30,6 +32,8 @@ import * as blueprint from './blueprint.js';
 import { review } from './review.js';
 import { generateCatalog } from './catalog.js';
 import type { CatalogFormat } from './catalog.js';
+import { buildpack } from './buildpack.js';
+import { verifyArtifact, formatVerifyResult } from './verify.js';
 import type { RepoContext, RepoType, DecisionPacket, WebOptions } from './types.js';
 
 function usage(): never {
@@ -39,6 +43,8 @@ Commands:
   drive [repo-path]           Run the Curator freshness driver.
   ritual [repo-path]          Full ritual: drive + blueprint + review + catalog.
   blueprint [repo-path]       Generate Blueprint Pack from latest decision.
+  buildpack [repo-path]       Emit builder prompt packet for chat LLMs (--json for JSON).
+  verify [repo-path]          Lint artifact against blueprint + truth bundle.
   review [repo-path]          Print a 4-block editorial review card (--json for JSON).
   catalog [--all] [--format]  Generate catalog (md or html).
   memory show [--org]         Show repo memory (or --org for org-level).
@@ -69,6 +75,12 @@ Drive options:
 Catalog options:
   --all                Include all entries (ignore active season filter).
   --format <md|html>   Output format (default: md). html = gallery view.
+
+Buildpack options:
+  --json               Output as JSON instead of text prompt.
+
+Verify options:
+  --artifact <path>    Path to the artifact file to lint (required).
 
 Ritual options:
   Runs drive --curate-org --web --blueprint --review, then updates catalog.
@@ -549,6 +561,63 @@ async function cmdCatalog(args: string[]): Promise<void> {
   }
 }
 
+// ── Buildpack command ───────────────────────────────────────────
+
+async function cmdBuildpack(args: string[]): Promise<void> {
+  const jsonMode = args.includes('--json');
+  const positional = args.filter(a => !a.startsWith('--'));
+  const repoPath = resolve(positional[0] ?? '.');
+  const repoName = basename(repoPath);
+
+  const result = await buildpack(repoPath);
+  if (!result) {
+    console.error(`No decision packet found at ${resolve(repoPath, '.artifact', 'decision_packet.json')}`);
+    console.error('Run "artifact drive" first to generate a decision.');
+    process.exit(1);
+  }
+
+  if (jsonMode) {
+    console.log(JSON.stringify(result.json, null, 2));
+  } else {
+    console.log(result.text);
+  }
+}
+
+// ── Verify command ─────────────────────────────────────────────
+
+async function cmdVerify(args: string[]): Promise<void> {
+  const artifactPath = flagValue(args, '--artifact');
+  const jsonMode = args.includes('--json');
+  const positional = args.filter((a, i) => !a.startsWith('--') && !flagValueIndices(args, ['--artifact']).has(i));
+  const repoPath = resolve(positional[0] ?? '.');
+  const repoName = basename(repoPath);
+
+  if (!artifactPath) {
+    console.error('Usage: artifact verify [repo-path] --artifact <path>');
+    console.error('  --artifact <path>  Path to the generated artifact file to lint.');
+    process.exit(1);
+  }
+
+  const result = await verifyArtifact(repoPath, artifactPath);
+  if (!result) {
+    console.error(`Could not load decision packet, truth bundle, or artifact file.`);
+    console.error(`  Repo: ${repoPath}`);
+    console.error(`  Artifact: ${artifactPath}`);
+    console.error('Run "artifact drive" first, and verify the artifact path exists.');
+    process.exit(1);
+  }
+
+  if (jsonMode) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(formatVerifyResult(result, repoName));
+  }
+
+  if (!result.passed) {
+    process.exit(1);
+  }
+}
+
 // ── Ritual command ──────────────────────────────────────────────
 
 async function cmdRitual(args: string[]): Promise<void> {
@@ -607,6 +676,10 @@ async function main(): Promise<void> {
     await cmdRitual(args.slice(1));
   } else if (cmd === 'blueprint') {
     await cmdBlueprint(args.slice(1));
+  } else if (cmd === 'buildpack') {
+    await cmdBuildpack(args.slice(1));
+  } else if (cmd === 'verify') {
+    await cmdVerify(args.slice(1));
   } else if (cmd === 'review') {
     await cmdReview(args.slice(1));
   } else if (cmd === 'catalog') {
