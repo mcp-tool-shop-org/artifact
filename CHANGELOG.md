@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-03-03
+
+### Added
+
+- Phase 15: Remote Repo Analysis — `--remote owner/repo` flag analyzes GitHub repos without local clone
+- Phase 16: Disk Cache + ETag Conditional Requests — warm cache = 0 API calls, blob SHA content-addressable caching
+- Phase 17: Batch Crawl — `artifact crawl --org <name>` curates an entire GitHub org in one command
+- `artifact crawl --from <file>` — crawl repos listed in a text file (one owner/repo per line)
+- `--dry-run` — list repos that would be crawled without processing
+- `--skip-curated` — skip repos that already have a decision packet
+- `--remote-refresh` — force re-fetch, ignoring disk cache TTL
+- Rate-limit aware backoff — sleeps until reset when GitHub API remaining is low
+- Per-repo error isolation — failed repos don't crash the batch
+- Auto catalog regeneration + org health stats at end of crawl
+- Remote output dir: `~/.artifact/repos/<owner>/<repo>/`
+
 ## [1.2.0] - 2026-03-03
 
 ### Added
