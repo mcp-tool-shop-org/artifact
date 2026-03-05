@@ -15,7 +15,7 @@ export const config: SiteConfig = {
     headlineAccent: 'Repo-grounded decisions.',
     description: 'Runs a freshness driver against any repo and outputs a structured decision packet — tier, format, constraints, hooks, truth atoms with file:line citations.',
     primaryCta: { href: '#usage', label: 'Get started' },
-    secondaryCta: { href: '#features', label: 'How it works' },
+    secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
       { label: 'Install', code: 'npm install -g @mcptoolshop/artifact' },
       { label: 'Run', code: 'artifact drive /path/to/repo' },
