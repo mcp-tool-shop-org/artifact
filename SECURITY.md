@@ -34,3 +34,12 @@ This tool operates **locally only**.
 - **No secrets handling** — does not read, store, or transmit credentials
 - **No telemetry** is collected or sent
 - **Permissions required:** filesystem read on target repo, filesystem write on `.artifact/` and `~/.artifact/`
+
+### MCP Server Mode
+
+When running as an MCP server (`artifact mcp` or `artifact-mcp`), additional scope applies:
+
+- **Transport:** stdio only — no HTTP listener, no exposed ports
+- **Remote access:** the `remote` param uses GitHub API (read-only) via `$GITHUB_TOKEN` if set — no write access
+- **No persistent connections** — each tool call is stateless beyond the Ollama session
+- **Same data boundaries** — MCP tools read/write the same paths as the CLI (`.artifact/`, `~/.artifact/`)

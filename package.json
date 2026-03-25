@@ -1,10 +1,11 @@
 {
   "name": "@mcptoolshop/artifact",
-  "version": "1.5.0",
+  "version": "1.6.1",
   "description": "Repo signature artifact decision system — checklist tree + Ollama-powered Curator freshness driver",
   "type": "module",
   "bin": {
-    "artifact": "./dist/cli.js"
+    "artifact": "./dist/cli.js",
+    "artifact-mcp": "./dist/mcp.js"
   },
   "scripts": {
     "build": "tsc",
@@ -16,7 +17,9 @@
     "curator",
     "ollama",
     "decision-system",
-    "mcp-tool-shop"
+    "mcp-tool-shop",
+    "mcp",
+    "model-context-protocol"
   ],
   "author": "mcp-tool-shop",
   "license": "MIT",
@@ -33,6 +36,10 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.25.23"
+  },
   "devDependencies": {
     "@types/node": "^25.3.3",
     "typescript": "^5.9.3"

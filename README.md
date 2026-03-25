@@ -67,6 +67,7 @@ artifact ritual /path/to/repo
 | `about` | Version, active persona, and core rules |
 | `whoami` | Print active persona name + motto |
 | `--version` | Print version and exit |
+| `mcp` | Start MCP server (stdio transport) |
 
 ### Memory & History
 
@@ -164,6 +165,55 @@ All core commands support `--remote` for analyzing GitHub repos without a local 
 ```
 
 Results are cached at `~/.artifact/repos/owner/repo/`. Requires `GITHUB_TOKEN` for private repos and higher rate limits.
+
+## MCP Server
+
+Artifact includes a built-in [Model Context Protocol](https://modelcontextprotocol.io) server. Any MCP-compatible agent (Claude Code, Claude Desktop, Cursor, etc.) can call Artifact's tools directly.
+
+### Setup
+
+Add to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "artifact": {
+      "command": "artifact-mcp",
+      "env": {
+        "GITHUB_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
+
+Or launch via CLI: `artifact mcp`
+
+### Tools
+
+| Tool | What it does |
+|------|-------------|
+| `artifact_truth` | Extract grounded truth atoms with `file:line` citations |
+| `artifact_infer` | Compute deterministic inference profile (no Ollama) |
+| `artifact_drive` | Run the full Curator freshness driver |
+| `artifact_verify` | Lint artifact against blueprint + truth bundle |
+| `artifact_buildpack` | Generate builder prompt packet for LLMs |
+| `artifact_blueprint` | Generate Blueprint Pack from latest decision |
+| `artifact_review` | Generate 4-block editorial review card |
+| `artifact_catalog` | Generate season catalog |
+| `artifact_org_status` | Org-wide curation health |
+
+All source-accepting tools support both `repoPath` (local) and `remote` (owner/repo via GitHub API).
+
+### Resources
+
+| URI | Description |
+|-----|-------------|
+| `artifact://org/status` | Current org-wide curation status |
+| `artifact://org/season` | Active curation season rules |
+| `artifact://persona` | Active curator persona |
+
+See the [MCP Server handbook page](https://mcp-tool-shop-org.github.io/artifact/handbook/mcp-server/) for full documentation.
 
 ## Threat Model
 

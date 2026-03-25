@@ -21,6 +21,7 @@
  *   memory stats                Memory statistics
  *   season list|set|status|end  Manage curation seasons
  *   org status|ledger|bans      Org-wide curation info
+ *   mcp                         Start MCP server (stdio transport)
  */
 
 import { resolve, basename, dirname, join } from 'node:path';
@@ -100,6 +101,7 @@ Commands:
   built add <repo> <path...>  Attach artifact file paths to tracking.
   built ls [repo-name]        List built status (all or one repo).
   built status <repo-name>    Detailed tracking for one repo.
+  mcp                         Start MCP server (stdio transport).
 
 Drive options:
   --no-curator         Skip Ollama, use deterministic fallback only.
@@ -1414,6 +1416,11 @@ async function main(): Promise<void> {
       console.error('Available: add, ls, status');
       usage();
     }
+  } else if (cmd === 'mcp') {
+    // Launch MCP server — dynamic import to keep cli.ts light
+    await import('./mcp.js');
+    // mcp.ts self-starts on import (connects to stdio); block here
+    await new Promise(() => {}); // hold process open
   } else {
     console.error(`Unknown command: ${cmd}`);
     usage();

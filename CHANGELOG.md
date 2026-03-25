@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] - 2026-03-25
+
+### Added
+
+- MCP server mode (`artifact mcp` / `artifact-mcp` binary) — 9 tools + 3 resources over stdio transport
+- 8 MCP integration tests (in-memory transport)
+- SECURITY.md MCP server scope section
+
+### Fixed
+
+- CLI `loadIndex()` structured error on malformed JSON (was raw stack trace)
+
 ## [1.5.0] - 2026-03-03
 
 ### Added
