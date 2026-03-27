@@ -117,6 +117,9 @@ artifact ritual /path/to/repo
 --review             Also print review card
 --type <type>        Repo type (R1_tooling_cli, etc.)
 --web                Enable web recommendations
+--web-cache-ttl <h>  Cache TTL in hours (default: 72)
+--web-domains <csv>  Comma-separated domain allowlist
+--web-refresh        Bypass cache, re-fetch all queries
 --curate-org         Enable org-wide curation (season + bans + gaps)
 ```
 

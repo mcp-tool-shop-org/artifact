@@ -14,7 +14,9 @@ Welcome to the Artifact handbook. This is the complete guide to running the Cura
 - **[Personas](/artifact/handbook/personas/)** — The three built-in curator personas
 - **[Org Curation](/artifact/handbook/org-curation/)** — Seasons, bans, gaps, and portfolio management
 - **[Configuration](/artifact/handbook/configuration/)** — Environment variables and options
+- **[MCP Server](/artifact/handbook/mcp-server/)** — Use Artifact as a Model Context Protocol server for AI agents
 - **[Security](/artifact/handbook/security/)** — Threat model and data scope
+- **[Beginners](/artifact/handbook/beginners/)** — New to Artifact? Start here (includes glossary)
 
 ## What is Artifact?
 

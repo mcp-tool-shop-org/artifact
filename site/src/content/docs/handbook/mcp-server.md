@@ -130,7 +130,7 @@ Generate a Blueprint Pack from the latest decision packet. Contains format hints
 
 ### `artifact_review`
 
-Generate a 4-block editorial review card: Identity, Decision, Freshness, Verdict. Evaluates the latest decision and flags violations.
+Generate a 4-block editorial review card: Pick, Why, Required Twist, Risks. Evaluates the latest decision and flags violations.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

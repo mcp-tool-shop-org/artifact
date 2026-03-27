@@ -27,6 +27,15 @@ When using `--remote`, it fetches public repo data from the GitHub API. This req
 - No telemetry is collected or sent
 - No file contents are sent to external services
 
+## Write scope
+
+Artifact writes to exactly two locations:
+
+1. **Per-repo:** `.artifact/` inside the target repo — contains `decision_packet.json`, generated blueprints, and review cards. This directory is typically gitignored.
+2. **Global:** `~/.artifact/` in your home directory — contains config, org-level state (seasons, ledger, bans), memory entries, and cached remote repo data.
+
+No other directories are written to. No temporary files are created outside these paths.
+
 ## Privacy command
 
 View exactly what Artifact stores and where:
